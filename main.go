@@ -1,148 +1,135 @@
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
+	"compress/zlib"
 	"context"
-	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/url"
 	"os"
+	"path"
+	"runtime"
 	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"golang.org/x/crypto/openpgp"
+	"gopkg.in/yaml.v3"
 )
 
+func check[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func check0(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 func main() {
-	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
+	log.SetFlags(log.Ldate | log.Ltime)
 	log.Println("Starting")
 
-	s3access := flag.String("s3-access", "", "s3 access key")
-	s3secret := flag.String("s3-secret", "", "s3 secret key")
-	s3endpoint := flag.String("s3-endpoint", "", "s3 endpoint (no http)")
-	s3region := flag.String("s3-region", "us-east-1", "s3 region")
-	backupFile := flag.String("file", "/dev/sda", "file path of device to backup")
-	privateKeyFile := flag.String("privatekey-file", "", "The file where the private key is stored for encryption")
-	chunkSize := flag.Int("chunk-size", 1e6, "how big each chunk should be")
+	type Config struct {
+		S3 struct {
+			Access   string `yaml:"access"`
+			Secret   string `yaml:"secret"`
+			Region   string `yaml:"region"`
+			Endpoint string `yaml:"endpoint"`
+			Bucket   string `yaml:"bucket"`
+		} `yaml:"s3"`
 
-	flag.Parse()
+		GPG struct {
+			PrivateKeyFile string `yaml:"privateKeyFile"`
+		} `yaml:"gpg"`
 
-	creds := credentials.NewStaticV4(*s3access, *s3secret, "")
+		ChunkSize  int    `yaml:"chunkSize"`
+		BackupFile string `yaml:"backupFile"`
+	}
 
-	minioClient, err := minio.New(*s3endpoint, &minio.Options{
+	var config Config
+
+	for _, filepath := range []string{
+		"/etc/backup.yaml",
+		path.Join(check(os.UserHomeDir()), "backup.yaml"),
+		path.Join(check(os.UserConfigDir()), "backup.yaml"),
+		path.Join(check(os.Getwd()), "backup.yaml"),
+	} {
+		raw, err := os.ReadFile(filepath)
+		if err != nil {
+			continue
+		}
+		check0(yaml.Unmarshal(raw, &config))
+		log.Printf("Configs %s: %+v", filepath, config)
+	}
+
+	creds := credentials.NewStaticV4(config.S3.Access, config.S3.Secret, "")
+
+	minioClient := check(minio.New(config.S3.Endpoint, &minio.Options{
 		Creds:  creds,
 		Secure: true,
-		Region: *s3region,
-	})
+		Region: config.S3.Region,
+	}))
 
 	log.Println("Setup minio")
 
-	disk, err := os.Open(*backupFile)
-	if err != nil {
-		panic(err)
-	}
+	disk := check(os.Open(config.BackupFile))
 	defer disk.Close()
-	log.Println("Opened disk")
+	log.Println("Opened " + config.BackupFile)
 
-	privateKey, err := os.Open(*privateKeyFile)
-	if err != nil {
-		panic(err)
-	}
+	privateKey := check(os.Open(config.GPG.PrivateKeyFile))
 	defer privateKey.Close()
 	log.Println("Opened private key")
 
-	entities, err := openpgp.ReadArmoredKeyRing(privateKey)
-	if err != nil {
-		panic(err)
-	}
+	entities := check(openpgp.ReadArmoredKeyRing(privateKey))
 	log.Println("Collected keys", entities)
 
-	chunkChan := make(chan []byte)
+	zippedReader, zippedWriter := io.Pipe()
+	zipWrite := zlib.NewWriter(zippedWriter)
 
-	go func() {
-		for {
-			bits := make([]byte, *chunkSize)
-			n, err := disk.Read(bits)
-			if err != nil {
-				panic(err)
-			}
-			log.Println("Emitting chunk", n, len(bits))
-			chunkChan <- bits
-			if n < *chunkSize {
-				break
-			}
+	go func() { check(io.Copy(zipWrite, disk)) }()
+
+	now := time.Now()
+	i := 0
+
+	for {
+		start := time.Now()
+		encryptedReader, encryptedWriter := io.Pipe()
+		encryptWriter, err := openpgp.Encrypt(encryptedWriter, entities, nil, nil, nil)
+		if err != nil {
+			panic(err)
 		}
-		close(chunkChan)
-	}()
 
-	zippedChunkChan := make(chan []byte)
+		log.Printf("Encrypting chunk %d\n", i)
+		check(io.CopyN(encryptWriter, zippedReader, int64(config.ChunkSize)))
+		// go func() { check(io.CopyN(encryptWriter, zippedReader, int64(config.ChunkSize))) }()
 
-	go func() {
-		zipBuff := new(bytes.Buffer)
-		for chunk := range chunkChan {
-			log.Println("Writing compressed chunk")
-			zipWriter := gzip.NewWriter(zipBuff)
-			_, err := zipWriter.Write(chunk)
-			if err != nil {
-				panic(err)
-			}
-			log.Println("Compressing chunk complete, adding", zipBuff.Len())
+		log.Println("Encryption complete, uploading")
+		info := check(minioClient.PutObject(
+			context.Background(),
+			"danhabot-desktop-backups",
+			fmt.Sprintf("%s-%d.gz.gpg", url.QueryEscape(now.String()), i),
+			encryptedReader,
+			-1,
+			minio.PutObjectOptions{
+				ConcurrentStreamParts: true,
+				NumThreads:            uint(runtime.NumCPU()),
+			},
+		))
 
-			if zipBuff.Len() >= *chunkSize {
-				log.Println("Compress buffer full, flusing")
-				zippedChunkChan <- zipBuff.Bytes()
-				zipBuff = new(bytes.Buffer)
-			}
+		log.Printf("Upload successfully took %s: %v", time.Since(start), info)
+		log.Println("--------------------")
+
+		i++
+
+		if info.Size < int64(config.ChunkSize) {
+			break
 		}
-		close(zippedChunkChan)
-	}()
+	}
 
-	encryptedChunkChan := make(chan []byte)
-
-	go func() {
-		for chunk := range zippedChunkChan {
-			buff := new(bytes.Buffer)
-			log.Println("Encrypting chunk", entities, buff.Len())
-			writer, err := openpgp.Encrypt(buff, entities, nil, nil, nil)
-			if err != nil {
-				panic(err)
-			}
-			writer.Write(chunk)
-			log.Println("Finished encrypting chunk")
-			encryptedChunkChan <- buff.Bytes()
-		}
-		close(encryptedChunkChan)
-	}()
-
-	finished := make(chan struct{})
-
-	go func() {
-		now := time.Now()
-		i := 0
-		for chunk := range encryptedChunkChan {
-			buff := new(bytes.Buffer)
-			buff.Write(chunk)
-
-			info, err := minioClient.PutObject(
-				context.Background(),
-				"danhabot-desktop-backups",
-				fmt.Sprintf("%s-%d.gz.gpg", now, i),
-				buff,
-				int64(buff.Len()),
-				minio.PutObjectOptions{},
-			)
-
-			if err != nil {
-				panic(err)
-			}
-			log.Println("Finished uploading", i, info)
-			i++
-		}
-		finished <- struct{}{}
-		close(finished)
-	}()
-
-	<-finished
 }
