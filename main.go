@@ -1,15 +1,20 @@
 package main
 
 import (
-	"compress/zlib"
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -32,7 +37,8 @@ func check0(err error) {
 }
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime)
+	// log.SetFlags(log.Ldate | log.Ltime)
+	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
 	log.Println("Starting")
 
 	type Config struct {
@@ -48,8 +54,10 @@ func main() {
 			PrivateKeyFile string `yaml:"privateKeyFile"`
 		} `yaml:"gpg"`
 
-		ChunkSize  int    `yaml:"chunkSize"`
-		BackupFile string `yaml:"backupFile"`
+		ChunkSize int `yaml:"chunkSize"`
+
+		includeDirs     []string `yaml:"includeDir"`
+		excludePatterns []string `yaml:"excludePatterns"`
 	}
 
 	var config Config
@@ -78,10 +86,6 @@ func main() {
 
 	log.Println("Setup minio")
 
-	disk := check(os.Open(config.BackupFile))
-	defer disk.Close()
-	log.Println("Opened " + config.BackupFile)
-
 	privateKey := check(os.Open(config.GPG.PrivateKeyFile))
 	defer privateKey.Close()
 	log.Println("Opened private key")
@@ -89,47 +93,99 @@ func main() {
 	entities := check(openpgp.ReadArmoredKeyRing(privateKey))
 	log.Println("Collected keys", entities)
 
-	zippedReader, zippedWriter := io.Pipe()
-	zipWrite := zlib.NewWriter(zippedWriter)
-
-	go func() { check(io.Copy(zipWrite, disk)) }()
-
 	now := time.Now()
-	i := 0
 
-	for {
-		start := time.Now()
-		encryptedReader, encryptedWriter := io.Pipe()
-		encryptWriter, err := openpgp.Encrypt(encryptedWriter, entities, nil, nil, nil)
-		if err != nil {
-			panic(err)
+	tarBuff := new(bytes.Buffer)
+	tarWriter := tar.NewWriter(tarBuff)
+
+	var tarLock sync.Locker
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		log.Println("Reading files")
+
+		for _, includeDir := range config.includeDirs {
+			log.Println("Looking through", includeDir)
+			check0(filepath.Walk(includeDir, func(fileName string, stat fs.FileInfo, err error) error {
+				for _, pattern := range config.excludePatterns {
+					if check(filepath.Match(pattern, fileName)) {
+						log.Println("Skipping file", fileName)
+						return nil
+					}
+				}
+
+				if err != nil {
+					panic(err)
+				}
+
+				go func() {
+					defer wg.Done()
+					wg.Add(1)
+					log.Println("Opening file", fileName)
+					file := check(os.Open(fileName))
+					compressedFile := new(bytes.Buffer)
+					gzipWriter := gzip.NewWriter(compressedFile)
+					check(io.Copy(gzipWriter, file))
+
+					defer tarLock.Unlock()
+					tarLock.Lock()
+
+					header := &tar.Header{
+						Name:    fileName,
+						Size:    stat.Size(),
+						Mode:    int64(stat.Mode()),
+						ModTime: stat.ModTime(),
+					}
+
+					log.Printf("Compressed %s, writing... %+v", fileName, header)
+					check0(tarWriter.WriteHeader(header))
+					check(io.Copy(tarWriter, compressedFile))
+				}()
+
+				return nil
+			}))
 		}
+	}()
 
-		log.Printf("Encrypting chunk %d\n", i)
-		check(io.CopyN(encryptWriter, zippedReader, int64(config.ChunkSize)))
-		// go func() { check(io.CopyN(encryptWriter, zippedReader, int64(config.ChunkSize))) }()
+	go func() {
+		defer wg.Done()
 
-		log.Println("Encryption complete, uploading")
-		info := check(minioClient.PutObject(
-			context.Background(),
-			"danhabot-desktop-backups",
-			fmt.Sprintf("%s-%d.gz.gpg", url.QueryEscape(now.String()), i),
-			encryptedReader,
-			-1,
-			minio.PutObjectOptions{
-				ConcurrentStreamParts: true,
-				NumThreads:            uint(runtime.NumCPU()),
-			},
-		))
+		log.Println("Compressing and sending")
 
-		log.Printf("Upload successfully took %s: %v", time.Since(start), info)
-		log.Println("--------------------")
+		var n int64
+		var i int
+		for n >= int64(config.ChunkSize) {
+			unencryptedBuffer := new(bytes.Buffer)
+			n = check(io.CopyN(unencryptedBuffer, tarBuff, int64(config.ChunkSize)))
+			log.Println("Chunk ready, encrypting and uploading", i)
 
-		i++
+			go func(unencryptedBuffer *bytes.Buffer, i int) {
+				defer wg.Done()
+				wg.Add(1)
 
-		if info.Size < int64(config.ChunkSize) {
-			break
+				encryptedBuffer := new(bytes.Buffer)
+				encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
+				go func() { check(io.Copy(encryptWriter, encryptedBuffer)) }()
+
+				info := check(minioClient.PutObject(
+					context.Background(),
+					"danhabot-desktop-backups",
+					fmt.Sprintf("%s-%d.gz.gpg", url.QueryEscape(now.String()), i),
+					encryptedBuffer,
+					int64(encryptedBuffer.Len()),
+					minio.PutObjectOptions{
+						ConcurrentStreamParts: true,
+						NumThreads:            uint(runtime.NumCPU()),
+					},
+				))
+
+				log.Println("Chunk uploaded", info)
+			}(unencryptedBuffer, i)
+			i++
 		}
-	}
+	}()
 
+	wg.Wait()
 }
