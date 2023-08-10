@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	"math"
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -63,6 +63,23 @@ type Config struct {
 	ExcludePatterns []string `yaml:"excludePatterns"`
 }
 
+func AllFieldsDefined(v interface{}) bool {
+	value := reflect.ValueOf(v)
+	if value.Kind() != reflect.Struct {
+		return false
+	}
+
+	numFields := value.NumField()
+	for i := 0; i < numFields; i++ {
+		fieldValue := value.Field(i)
+		if reflect.DeepEqual(fieldValue.Interface(), reflect.Zero(fieldValue.Type()).Interface()) {
+			return false
+		}
+	}
+
+	return true
+}
+
 type ReaderWithLength interface {
 	Read(p []byte) (n int, err error)
 	Len() int
@@ -105,6 +122,9 @@ func main() {
 			continue
 		}
 		check0(yaml.Unmarshal(raw, &config))
+		if AllFieldsDefined(config) {
+			break
+		}
 	}
 
 	log.Printf("Config: %+v\n ", config)
@@ -148,33 +168,38 @@ func main() {
 					fileName := task.fileName
 					stat := task.stat
 
-					content, err := ioutil.ReadFile(fileName)
+					content, err := os.ReadFile(fileName)
 					if err != nil {
 						log.Println("Unable to open file", err)
 						return
 					}
 
+					log.Printf("Compressing file %s...\n", fileName)
+
 					compressedFile := new(bytes.Buffer)
-					defer compressedFile.Reset()
 					gzipWriter := gzip.NewWriter(compressedFile)
-					_, err = copyProgress(gzipWriter, bytes.NewBuffer(content), fmt.Sprintf("Compressing %s", fileName))
+					_, err = io.Copy(gzipWriter, bytes.NewBuffer(content))
 					if err != nil {
-						log.Println("Unable to read file", err)
+						log.Println("Unable to compress file", err)
 						return
 					}
+					log.Printf("Compressed file %s, writing to tar file\n", fileName)
 
-					header := &tar.Header{
-						Name:    fileName,
-						Size:    int64(compressedFile.Len()),
-						Mode:    int64(stat.Mode()),
-						ModTime: stat.ModTime(),
+					if compressedFile.Len() > 0 {
+						header := &tar.Header{
+							Name:    fileName,
+							Size:    int64(compressedFile.Len()),
+							Mode:    int64(stat.Mode()),
+							ModTime: stat.ModTime(),
+						}
+
+						defer tarLock.Unlock()
+						tarLock.Lock()
+
+						check0(tarWriter.WriteHeader(header))
+						check(io.Copy(tarWriter, compressedFile))
+						log.Printf("Finished writing %s to tar\n", fileName)
 					}
-
-					tarLock.Lock()
-					defer tarLock.Unlock()
-
-					check0(tarWriter.WriteHeader(header))
-					check(copyProgress(tarWriter, compressedFile, fmt.Sprintf("Writing %s to tar", fileName)))
 				}()
 			}
 		}()
@@ -191,6 +216,14 @@ func main() {
 				}
 
 				if stat.IsDir() {
+					return nil
+				}
+
+				if !stat.Mode().IsRegular() {
+					return nil
+				}
+
+				if stat.Size() <= 0 {
 					return nil
 				}
 
@@ -222,10 +255,10 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for task := range unencryptedBufferChan {
-			encryptedBuffer := new(bytes.Buffer)
+			encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
 			encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
-			check(copyProgress(encryptWriter, task.buffer, fmt.Sprintf("Encrypting chunk %d", task.i)))
-
+			check(io.Copy(encryptWriter, task.buffer))
+			fmt.Sprintf("Encrypted chunk %d", task.i)
 			encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
 		}
 	}()
@@ -237,8 +270,9 @@ func main() {
 		n := int64(math.MaxInt64)
 		i := 0
 		for n >= config.ChunkSize {
-			unencryptedBuffer := new(bytes.Buffer)
-			n = check(copyProgressN(unencryptedBuffer, tarReader, config.ChunkSize, "Collecting chunk"))
+			unencryptedBuffer := bytes.NewBuffer(make([]byte, 0, config.ChunkSize))
+			n = check(io.CopyN(unencryptedBuffer, tarReader, config.ChunkSize))
+			log.Println("Collecting chunk", i)
 			unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
 			i++
 		}
@@ -250,22 +284,32 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for task := range encryptedBufferChan {
-			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
+			for {
+				bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
 
-			check(minioClient.PutObject(
-				context.Background(),
-				config.S3.Bucket,
-				fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
-				task.buffer,
-				int64(task.buffer.Len()),
-				minio.PutObjectOptions{
-					ConcurrentStreamParts: true,
-					NumThreads:            uint(runtime.NumCPU()),
-					Progress:              bar,
-				},
-			))
+				_, err := minioClient.PutObject(
+					context.Background(),
+					config.S3.Bucket,
+					fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
+					task.buffer,
+					int64(task.buffer.Len()),
+					minio.PutObjectOptions{
+						ConcurrentStreamParts: true,
+						NumThreads:            uint(runtime.NumCPU()),
+						Progress:              bar,
+					},
+				)
 
-			bar.Close()
+				if err == nil {
+					break
+				} else {
+					log.Println("MINIO ERROR", err)
+					time.Sleep(30 * time.Second)
+				}
+
+				bar.Close()
+			}
+			runtime.GC()
 		}
 	}()
 
