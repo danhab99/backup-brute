@@ -9,16 +9,20 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/gammazero/workerpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	ignore "github.com/sabhiram/go-gitignore"
 	"golang.org/x/crypto/openpgp"
 	"gopkg.in/yaml.v3"
 )
@@ -36,29 +40,28 @@ func check0(err error) {
 	}
 }
 
+type Config struct {
+	S3 struct {
+		Access   string `yaml:"access"`
+		Secret   string `yaml:"secret"`
+		Region   string `yaml:"region"`
+		Endpoint string `yaml:"endpoint"`
+		Bucket   string `yaml:"bucket"`
+	} `yaml:"s3"`
+
+	GPG struct {
+		PrivateKeyFile string `yaml:"privateKeyFile"`
+	} `yaml:"gpg"`
+
+	ChunkSize       int      `yaml:"chunkSize"`
+	IncludeDirs     []string `yaml:"includeDirs"`
+	ExcludePatterns []string `yaml:"excludePatterns"`
+}
+
 func main() {
 	// log.SetFlags(log.Ldate | log.Ltime)
 	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
 	log.Println("Starting")
-
-	type Config struct {
-		S3 struct {
-			Access   string `yaml:"access"`
-			Secret   string `yaml:"secret"`
-			Region   string `yaml:"region"`
-			Endpoint string `yaml:"endpoint"`
-			Bucket   string `yaml:"bucket"`
-		} `yaml:"s3"`
-
-		GPG struct {
-			PrivateKeyFile string `yaml:"privateKeyFile"`
-		} `yaml:"gpg"`
-
-		ChunkSize int `yaml:"chunkSize"`
-
-		includeDirs     []string `yaml:"includeDir"`
-		excludePatterns []string `yaml:"excludePatterns"`
-	}
 
 	var config Config
 
@@ -75,6 +78,10 @@ func main() {
 		check0(yaml.Unmarshal(raw, &config))
 		log.Printf("Configs %s: %+v", filepath, config)
 	}
+
+	log.Printf("Config: %+v\n ", config)
+
+	ignorer := ignore.CompileIgnoreLines(config.ExcludePatterns...)
 
 	creds := credentials.NewStaticV4(config.S3.Access, config.S3.Secret, "")
 
@@ -95,10 +102,10 @@ func main() {
 
 	now := time.Now()
 
-	tarBuff := new(bytes.Buffer)
-	tarWriter := tar.NewWriter(tarBuff)
+	tarReader, tarPipeWriter := io.Pipe()
+	tarWriter := tar.NewWriter(tarPipeWriter)
+	var tarLock sync.Mutex
 
-	var tarLock sync.Locker
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -106,46 +113,60 @@ func main() {
 		defer wg.Done()
 		log.Println("Reading files")
 
-		for _, includeDir := range config.includeDirs {
+		for _, includeDir := range config.IncludeDirs {
 			log.Println("Looking through", includeDir)
-			check0(filepath.Walk(includeDir, func(fileName string, stat fs.FileInfo, err error) error {
-				for _, pattern := range config.excludePatterns {
-					if check(filepath.Match(pattern, fileName)) {
-						log.Println("Skipping file", fileName)
-						return nil
-					}
-				}
 
+			pool := workerpool.New(runtime.NumCPU())
+			defer pool.StopWait()
+
+			check0(filepath.Walk(includeDir, func(fileName string, stat fs.FileInfo, err error) error {
 				if err != nil {
 					panic(err)
 				}
 
-				go func() {
-					defer wg.Done()
-					wg.Add(1)
+				if stat.IsDir() {
+					return nil
+				}
+
+				if ignorer.MatchesPath(strings.ToLower(fileName)) {
+					return nil
+				}
+
+				pool.Submit(func() {
 					log.Println("Opening file", fileName)
-					file := check(os.Open(fileName))
+
+					file, err := os.Open(fileName)
+					if err != nil {
+						log.Println("Unable to open file", err)
+						return
+					}
+
 					compressedFile := new(bytes.Buffer)
 					gzipWriter := gzip.NewWriter(compressedFile)
-					check(io.Copy(gzipWriter, file))
-
-					defer tarLock.Unlock()
-					tarLock.Lock()
+					_, err = io.Copy(gzipWriter, file)
+					if err != nil {
+						log.Println("Unable to read file", err)
+						return
+					}
 
 					header := &tar.Header{
 						Name:    fileName,
-						Size:    stat.Size(),
+						Size:    int64(compressedFile.Len()),
 						Mode:    int64(stat.Mode()),
 						ModTime: stat.ModTime(),
 					}
 
-					log.Printf("Compressed %s, writing... %+v", fileName, header)
+					log.Printf("Compressed %s, writing... %+v\n", fileName, header)
+
+					defer tarLock.Unlock()
+					tarLock.Lock()
 					check0(tarWriter.WriteHeader(header))
 					check(io.Copy(tarWriter, compressedFile))
-				}()
+				})
 
 				return nil
 			}))
+
 		}
 	}()
 
@@ -154,38 +175,34 @@ func main() {
 
 		log.Println("Compressing and sending")
 
-		var n int64
+		n := int64(math.MaxInt64)
 		var i int
 		for n >= int64(config.ChunkSize) {
 			unencryptedBuffer := new(bytes.Buffer)
-			n = check(io.CopyN(unencryptedBuffer, tarBuff, int64(config.ChunkSize)))
+			n = check(io.CopyN(unencryptedBuffer, tarReader, int64(config.ChunkSize)))
 			log.Println("Chunk ready, encrypting and uploading", i)
 
-			go func(unencryptedBuffer *bytes.Buffer, i int) {
-				defer wg.Done()
-				wg.Add(1)
+			encryptedBuffer := new(bytes.Buffer)
+			encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
+			check(io.Copy(encryptWriter, encryptedBuffer))
 
-				encryptedBuffer := new(bytes.Buffer)
-				encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
-				go func() { check(io.Copy(encryptWriter, encryptedBuffer)) }()
+			info := check(minioClient.PutObject(
+				context.Background(),
+				"danhabot-desktop-backups",
+				fmt.Sprintf("%s-%d.gz.gpg", url.QueryEscape(now.String()), i),
+				encryptedBuffer,
+				int64(encryptedBuffer.Len()),
+				minio.PutObjectOptions{
+					ConcurrentStreamParts: true,
+					NumThreads:            uint(runtime.NumCPU()),
+				},
+			))
 
-				info := check(minioClient.PutObject(
-					context.Background(),
-					"danhabot-desktop-backups",
-					fmt.Sprintf("%s-%d.gz.gpg", url.QueryEscape(now.String()), i),
-					encryptedBuffer,
-					int64(encryptedBuffer.Len()),
-					minio.PutObjectOptions{
-						ConcurrentStreamParts: true,
-						NumThreads:            uint(runtime.NumCPU()),
-					},
-				))
-
-				log.Println("Chunk uploaded", info)
-			}(unencryptedBuffer, i)
+			log.Println("Chunk uploaded", info)
 			i++
 		}
 	}()
 
 	wg.Wait()
+	log.Println("DONE")
 }
