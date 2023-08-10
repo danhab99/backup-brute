@@ -77,17 +77,17 @@ func copyProgress(writer io.Writer, reader ReaderWithLength, label string) (int6
 	return io.Copy(io.MultiWriter(writer, bar), reader)
 }
 
-func copyProgressN(writer io.Writer, reader ReaderWithLength, n int64, label string) (int64, error) {
-	bar := progressbar.DefaultBytes(
-		int64(reader.Len()),
-		label,
-	)
+func copyProgressN(writer io.Writer, reader io.Reader, n int64, label string) (int64, error) {
+	bar := progressbar.DefaultBytes(n, label)
 	defer bar.Close()
 	return io.CopyN(io.MultiWriter(writer, bar), reader, n)
 }
 
 func main() {
 	now := time.Now()
+
+	progressbar.OptionSetElapsedTime(true)
+
 	// log.SetFlags(log.Ldate | log.Ltime)
 	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
 	log.Println("Starting")
@@ -238,7 +238,7 @@ func main() {
 		i := 0
 		for n >= config.ChunkSize {
 			unencryptedBuffer := new(bytes.Buffer)
-			n = check(io.CopyN(unencryptedBuffer, tarReader, int64(config.ChunkSize)))
+			n = check(copyProgressN(unencryptedBuffer, tarReader, config.ChunkSize, "Collecting chunk"))
 			unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
 			i++
 		}
@@ -250,7 +250,8 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for task := range encryptedBufferChan {
-			// info := check(minioClient.PutObject(
+			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
+
 			check(minioClient.PutObject(
 				context.Background(),
 				config.S3.Bucket,
@@ -260,8 +261,11 @@ func main() {
 				minio.PutObjectOptions{
 					ConcurrentStreamParts: true,
 					NumThreads:            uint(runtime.NumCPU()),
+					Progress:              bar,
 				},
 			))
+
+			bar.Close()
 		}
 	}()
 
