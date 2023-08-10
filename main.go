@@ -156,7 +156,7 @@ func main() {
 						ModTime: stat.ModTime(),
 					}
 
-					log.Printf("Compressed %s, writing... %+v\n", fileName, header)
+					log.Printf("Compressed %s, writing...\n", fileName)
 
 					defer tarLock.Unlock()
 					tarLock.Lock()
@@ -188,7 +188,7 @@ func main() {
 
 			info := check(minioClient.PutObject(
 				context.Background(),
-				"danhabot-desktop-backups",
+				config.S3.Bucket,
 				fmt.Sprintf("%s-%d.gz.gpg", url.QueryEscape(now.String()), i),
 				encryptedBuffer,
 				int64(encryptedBuffer.Len()),
