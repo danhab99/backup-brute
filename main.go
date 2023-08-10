@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gammazero/workerpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	ignore "github.com/sabhiram/go-gitignore"
@@ -37,6 +36,11 @@ func check0(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+type IndexedBuffer struct {
+	buffer *bytes.Buffer
+	i      int
 }
 
 type Config struct {
@@ -58,6 +62,7 @@ type Config struct {
 }
 
 func main() {
+	now := time.Now()
 	// log.SetFlags(log.Ldate | log.Ltime)
 	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
 	log.Println("Starting")
@@ -98,15 +103,65 @@ func main() {
 	entities := check(openpgp.ReadArmoredKeyRing(privateKey))
 	log.Println("Collected keys", entities)
 
-	now := time.Now()
-
 	tarReader, tarPipeWriter := io.Pipe()
 	tarWriter := tar.NewWriter(tarPipeWriter)
 	var tarLock sync.Mutex
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(runtime.NumCPU())
 
+	fileNameChan := make(chan struct {
+		fileName string
+		stat     fs.FileInfo
+	}, runtime.NumCPU())
+
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			defer wg.Done()
+			for task := range fileNameChan {
+				func() {
+					fileName := task.fileName
+					stat := task.stat
+
+					log.Println("Opening file", fileName)
+
+					file, err := os.Open(fileName)
+					if err != nil {
+						log.Println("Unable to open file", err)
+						return
+					}
+					defer file.Close()
+
+					compressedFile := new(bytes.Buffer)
+					defer compressedFile.Reset()
+					gzipWriter := gzip.NewWriter(compressedFile)
+					_, err = io.Copy(gzipWriter, file)
+					if err != nil {
+						log.Println("Unable to read file", err)
+						return
+					}
+
+					header := &tar.Header{
+						Name:    fileName,
+						Size:    int64(compressedFile.Len()),
+						Mode:    int64(stat.Mode()),
+						ModTime: stat.ModTime(),
+					}
+
+					tarLock.Lock()
+					defer tarLock.Unlock()
+
+					log.Printf("Compressed %s, writing...\n", fileName)
+					check0(tarWriter.WriteHeader(header))
+					check(io.Copy(tarWriter, compressedFile))
+
+					log.Printf("Wrote %s into archive\n", fileName)
+				}()
+			}
+		}()
+	}
+
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		log.Println("Reading files")
@@ -114,62 +169,11 @@ func main() {
 		for _, includeDir := range config.IncludeDirs {
 			log.Println("Looking through", includeDir)
 
-			pool := workerpool.New(runtime.NumCPU())
-			defer pool.StopWait()
-
-			fileNameChan := make(chan struct {
-				fileName string
-				stat     fs.FileInfo
-			})
-
-			for i := 0; i < runtime.NumCPU(); i++ {
-				go func() {
-					for task := range fileNameChan {
-						func() {
-							fileName := task.fileName
-							stat := task.stat
-
-							log.Println("Opening file", fileName)
-
-							file, err := os.Open(fileName)
-							if err != nil {
-								log.Println("Unable to open file", err)
-								return
-							}
-							defer file.Close()
-
-							compressedFile := new(bytes.Buffer)
-							defer compressedFile.Reset()
-							gzipWriter := gzip.NewWriter(compressedFile)
-							_, err = io.Copy(gzipWriter, file)
-							if err != nil {
-								log.Println("Unable to read file", err)
-								return
-							}
-
-							header := &tar.Header{
-								Name:    fileName,
-								Size:    int64(compressedFile.Len()),
-								Mode:    int64(stat.Mode()),
-								ModTime: stat.ModTime(),
-							}
-
-							defer tarLock.Unlock()
-							tarLock.Lock()
-
-							log.Printf("Compressed %s, writing...\n", fileName)
-							check0(tarWriter.WriteHeader(header))
-							check(io.Copy(tarWriter, compressedFile))
-
-							log.Printf("Wrote %s into archive\n", fileName)
-						}()
-					}
-				}()
-			}
+			i := 0
 
 			check0(filepath.Walk(includeDir, func(fileName string, stat fs.FileInfo, err error) error {
 				if err != nil {
-					panic(err)
+					return nil
 				}
 
 				if stat.IsDir() {
@@ -180,6 +184,12 @@ func main() {
 					return nil
 				}
 
+				if i%1e4 == 0 {
+					log.Println("Skipping over files...")
+				}
+
+				i++
+
 				log.Println("Walking on file", fileName)
 				fileNameChan <- struct {
 					fileName string
@@ -189,54 +199,63 @@ func main() {
 				return nil
 			}))
 
+			log.Println("Finished walking")
+			wg.Wait()
 			close(fileNameChan)
+		}
+
+		tarWriter.Close()
+	}()
+
+	encryptedBufferChan := make(chan IndexedBuffer)
+	defer close(encryptedBufferChan)
+	unencryptedBufferChan := make(chan IndexedBuffer)
+	defer close(unencryptedBufferChan)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for task := range unencryptedBufferChan {
+			log.Println("Encrypting chunk")
+			encryptedBuffer := new(bytes.Buffer)
+			encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
+			check(io.Copy(encryptWriter, task.buffer))
+
+			log.Println("Chunk ready, encrypting and uploading", task.i)
+			encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
 		}
 	}()
 
-	encryptedBufferChan := make(chan *bytes.Buffer)
-	defer close(encryptedBufferChan)
-
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 
 		log.Println("Compressing and sending")
 
-		unencryptedBufferChan := make(chan *bytes.Buffer)
-		defer close(unencryptedBufferChan)
-
-		for i := 0; i < runtime.NumCPU(); i++ {
-			go func() {
-				for unencryptedBuffer := range unencryptedBufferChan {
-					encryptedBuffer := new(bytes.Buffer)
-					encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
-					check(io.Copy(encryptWriter, unencryptedBuffer))
-
-					log.Println("Chunk ready, encrypting and uploading", i)
-					encryptedBufferChan <- encryptedBuffer
-				}
-			}()
-		}
-
 		n := int64(math.MaxInt64)
+		i := 0
 		for n >= config.ChunkSize {
 			unencryptedBuffer := new(bytes.Buffer)
 			n = check(io.CopyN(unencryptedBuffer, tarReader, int64(config.ChunkSize)))
-			unencryptedBufferChan <- unencryptedBuffer
+			log.Println("Chunk collected", n)
+			unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
+			i++
 		}
 
 		close(encryptedBufferChan)
 	}()
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		i := 0
-		for encryptedBuffer := range encryptedBufferChan {
+		for task := range encryptedBufferChan {
+			log.Println("Uploading chunk")
 			info := check(minioClient.PutObject(
 				context.Background(),
 				config.S3.Bucket,
-				fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), i),
-				encryptedBuffer,
-				int64(encryptedBuffer.Len()),
+				fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
+				task.buffer,
+				int64(task.buffer.Len()),
 				minio.PutObjectOptions{
 					ConcurrentStreamParts: true,
 					NumThreads:            uint(runtime.NumCPU()),
@@ -244,7 +263,6 @@ func main() {
 			))
 
 			log.Println("Chunk uploaded", info)
-			i++
 		}
 	}()
 
