@@ -256,7 +256,6 @@ func main() {
 		log.Println("------------\nFinished walking, closing tar file")
 		check0(tarWriter.Flush())
 		check0(tarWriter.Close())
-		check0(tarWriter.Close())
 		check0(tarPipeWriter.Close())
 	}()
 
