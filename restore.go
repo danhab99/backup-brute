@@ -39,9 +39,23 @@ func getBasenameWithoutExtension(p string) (string, error) {
 const parallelDownload = 10000
 
 func Restore(config BackupConfig) {
-	fmt.Print("Enter private key decryption password: ")
-	bytePassword := check(terminal.ReadPassword(int(syscall.Stdin)))
-	fmt.Println()
+
+	needPassword := false
+	var bytePassword []byte
+	for _, v := range config.Entities {
+		needPassword = needPassword && v.PrivateKey.Encrypted
+	}
+
+	if needPassword {
+		fmt.Print("Enter private key decryption password: ")
+		bytePassword = check(terminal.ReadPassword(int(syscall.Stdin)))
+		fmt.Println()
+
+		for _, v := range config.Entities {
+			check0(v.PrivateKey.Decrypt(bytePassword))
+		}
+	}
+
 	now := time.Now()
 
 	var wg sync.WaitGroup
@@ -122,10 +136,6 @@ func Restore(config BackupConfig) {
 		var buffLock sync.Mutex
 
 		count := 0
-
-		for _, v := range config.Entities {
-			check0(v.PrivateKey.Decrypt(bytePassword))
-		}
 
 		for i := 0; i < runtime.NumCPU(); i++ {
 			go func() {
