@@ -113,7 +113,7 @@ func Backup(config Config) {
 					return nil
 				}
 
-				if config.ignorer.MatchesPath(strings.ToLower(fileName)) {
+				if config.Ignorer.MatchesPath(strings.ToLower(fileName)) {
 					return nil
 				}
 
@@ -148,7 +148,7 @@ func Backup(config Config) {
 			defer encryptWg.Done()
 			for task := range unencryptedBufferChan {
 				encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
-				encryptWriter := check(openpgp.Encrypt(encryptedBuffer, config.entities, nil, nil, nil))
+				encryptWriter := check(openpgp.Encrypt(encryptedBuffer, config.Entities, nil, nil, nil))
 				check(io.Copy(encryptWriter, task.buffer))
 				log.Printf("Encrypted chunk %d", task.i)
 				encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
@@ -197,7 +197,7 @@ func Backup(config Config) {
 					for {
 						bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
 
-						_, err := config.minioClient.PutObject(
+						_, err := config.MinioClient.PutObject(
 							context.Background(),
 							config.S3.Bucket,
 							fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),

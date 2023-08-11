@@ -54,9 +54,9 @@ type Config struct {
 
 	DryRun bool `yaml:"dryrun"`
 
-	minioClient *minio.Client
-	ignorer     ignore.IgnoreParser
-	entities    openpgp.EntityList
+	MinioClient *minio.Client
+	Ignorer     ignore.IgnoreParser
+	Entities    openpgp.EntityList
 }
 
 func AllFieldsDefined(v interface{}) bool {
@@ -126,11 +126,11 @@ func main() {
 
 	log.Printf("Config: %+v\n ", config)
 
-	config.ignorer = ignore.CompileIgnoreLines(config.ExcludePatterns...)
+	config.Ignorer = ignore.CompileIgnoreLines(config.ExcludePatterns...)
 
 	creds := credentials.NewStaticV4(config.S3.Access, config.S3.Secret, "")
 
-	config.minioClient = check(minio.New(config.S3.Endpoint, &minio.Options{
+	config.MinioClient = check(minio.New(config.S3.Endpoint, &minio.Options{
 		Creds:  creds,
 		Secure: true,
 		Region: config.S3.Region,
@@ -139,7 +139,7 @@ func main() {
 	privateKey := check(os.Open(config.GPG.PrivateKeyFile))
 	defer privateKey.Close()
 
-	config.entities = check(openpgp.ReadArmoredKeyRing(privateKey))
+	config.Entities = check(openpgp.ReadArmoredKeyRing(privateKey))
 
 	if *doSize {
 		Size(config)
