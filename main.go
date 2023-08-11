@@ -61,6 +61,8 @@ type Config struct {
 	ChunkSize       int64    `yaml:"chunkSize"`
 	IncludeDirs     []string `yaml:"includeDirs"`
 	ExcludePatterns []string `yaml:"excludePatterns"`
+
+	DryRun bool `yaml:"dryrun"`
 }
 
 func AllFieldsDefined(v interface{}) bool {
@@ -153,57 +155,66 @@ func main() {
 	var tarLock sync.Mutex
 
 	var wg sync.WaitGroup
-	wg.Add(runtime.NumCPU())
 
 	fileNameChan := make(chan struct {
 		fileName string
 		stat     fs.FileInfo
 	}, runtime.NumCPU())
 
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go func() {
-			defer wg.Done()
-			for task := range fileNameChan {
-				func() {
-					fileName := task.fileName
-					stat := task.stat
+	var fileWg sync.WaitGroup
+	fileWg.Add(runtime.NumCPU())
 
-					content, err := os.ReadFile(fileName)
-					if err != nil {
-						log.Println("Unable to open file", err)
-						return
-					}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 
-					log.Printf("Compressing file %s...\n", fileName)
+		defer fileWg.Wait()
 
-					compressedFile := new(bytes.Buffer)
-					gzipWriter := gzip.NewWriter(compressedFile)
-					_, err = io.Copy(gzipWriter, bytes.NewBuffer(content))
-					if err != nil {
-						log.Println("Unable to compress file", err)
-						return
-					}
-					log.Printf("Compressed file %s, writing to tar file\n", fileName)
+		for i := 0; i < runtime.NumCPU(); i++ {
+			go func() {
+				defer fileWg.Done()
+				for task := range fileNameChan {
+					func() {
+						fileName := task.fileName
+						stat := task.stat
 
-					if compressedFile.Len() > 0 {
-						header := &tar.Header{
-							Name:    fileName,
-							Size:    int64(compressedFile.Len()),
-							Mode:    int64(stat.Mode()),
-							ModTime: stat.ModTime(),
+						content, err := os.ReadFile(fileName)
+						if err != nil {
+							log.Println("Unable to open file", err)
+							return
 						}
 
-						defer tarLock.Unlock()
-						tarLock.Lock()
+						log.Printf("Compressing file %s...\n", fileName)
 
-						check0(tarWriter.WriteHeader(header))
-						check(io.Copy(tarWriter, compressedFile))
-						log.Printf("Finished writing %s to tar\n", fileName)
-					}
-				}()
-			}
-		}()
-	}
+						compressedFile := new(bytes.Buffer)
+						gzipWriter := gzip.NewWriter(compressedFile)
+						_, err = io.Copy(gzipWriter, bytes.NewBuffer(content))
+						if err != nil {
+							log.Println("Unable to compress file", err)
+							return
+						}
+						log.Printf("Compressed file %s, writing to tar file\n", fileName)
+
+						if compressedFile.Len() > 0 {
+							header := &tar.Header{
+								Name:    fileName,
+								Size:    int64(compressedFile.Len()),
+								Mode:    int64(stat.Mode()),
+								ModTime: stat.ModTime(),
+							}
+
+							defer tarLock.Unlock()
+							tarLock.Lock()
+
+							check0(tarWriter.WriteHeader(header))
+							check(io.Copy(tarWriter, compressedFile))
+							log.Printf("Finished writing %s to tar\n", fileName)
+						}
+					}()
+				}
+			}()
+		}
+	}()
 
 	wg.Add(1)
 	go func() {
@@ -238,76 +249,95 @@ func main() {
 
 				return nil
 			}))
-
-			wg.Wait()
-			close(fileNameChan)
 		}
+		close(fileNameChan)
+		fileWg.Wait()
 
-		tarWriter.Close()
+		log.Println("------------\nFinished walking, closing tar file")
+		check0(tarWriter.Flush())
+		check0(tarWriter.Close())
+		check0(tarWriter.Close())
+		check0(tarPipeWriter.Close())
 	}()
 
 	encryptedBufferChan := make(chan IndexedBuffer)
-	defer close(encryptedBufferChan)
 	unencryptedBufferChan := make(chan IndexedBuffer)
-	defer close(unencryptedBufferChan)
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for task := range unencryptedBufferChan {
-			encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
-			encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
-			check(io.Copy(encryptWriter, task.buffer))
-			fmt.Sprintf("Encrypted chunk %d", task.i)
-			encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
-		}
-	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 
-		n := int64(math.MaxInt64)
-		i := 0
-		for n >= config.ChunkSize {
-			unencryptedBuffer := bytes.NewBuffer(make([]byte, 0, config.ChunkSize))
-			n = check(io.CopyN(unencryptedBuffer, tarReader, config.ChunkSize))
-			log.Println("Collecting chunk", i)
-			unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
-			i++
-		}
+		var encryptWg sync.WaitGroup
+		encryptWg.Add(2)
 
-		close(encryptedBufferChan)
+		go func() {
+			defer encryptWg.Done()
+			for task := range unencryptedBufferChan {
+				encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
+				encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
+				check(io.Copy(encryptWriter, task.buffer))
+				fmt.Sprintf("Encrypted chunk %d", task.i)
+				encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
+			}
+			close(encryptedBufferChan)
+		}()
+
+		go func() {
+			defer encryptWg.Done()
+			n := int64(math.MaxInt64)
+			i := 0
+			var err error
+			for n >= config.ChunkSize {
+				unencryptedBuffer := bytes.NewBuffer(make([]byte, 0, config.ChunkSize))
+				log.Println("Collecting chunk", i)
+				n, err = io.CopyN(unencryptedBuffer, tarReader, config.ChunkSize)
+
+				if n > 0 {
+					unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
+				}
+				i++
+
+				if err != nil {
+					break
+				}
+			}
+			close(unencryptedBufferChan)
+		}()
+
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for task := range encryptedBufferChan {
-			for {
-				bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
+			if config.DryRun {
+				log.Println("DRYRUN uploading buffer", task.buffer.Len())
+			} else {
+				for {
+					bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
 
-				_, err := minioClient.PutObject(
-					context.Background(),
-					config.S3.Bucket,
-					fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
-					task.buffer,
-					int64(task.buffer.Len()),
-					minio.PutObjectOptions{
-						ConcurrentStreamParts: true,
-						NumThreads:            uint(runtime.NumCPU()),
-						Progress:              bar,
-					},
-				)
+					_, err := minioClient.PutObject(
+						context.Background(),
+						config.S3.Bucket,
+						fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
+						task.buffer,
+						int64(task.buffer.Len()),
+						minio.PutObjectOptions{
+							ConcurrentStreamParts: true,
+							NumThreads:            uint(runtime.NumCPU()),
+							Progress:              bar,
+						},
+					)
 
-				if err == nil {
-					break
-				} else {
-					log.Println("MINIO ERROR", err)
-					time.Sleep(30 * time.Second)
+					if err == nil {
+						break
+					} else {
+						log.Println("MINIO ERROR", err)
+						time.Sleep(30 * time.Second)
+					}
+
+					bar.Close()
 				}
-
-				bar.Close()
 			}
 			runtime.GC()
 		}
