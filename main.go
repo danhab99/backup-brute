@@ -275,7 +275,7 @@ func main() {
 				encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
 				encryptWriter := check(openpgp.Encrypt(encryptedBuffer, entities, nil, nil, nil))
 				check(io.Copy(encryptWriter, task.buffer))
-				fmt.Sprintf("Encrypted chunk %d", task.i)
+				log.Printf("Encrypted chunk %d", task.i)
 				encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
 			}
 			close(encryptedBufferChan)
@@ -335,14 +335,14 @@ func main() {
 							},
 						)
 
+						bar.Close()
+
 						if err == nil {
 							break
 						} else {
 							log.Println("MINIO ERROR", err)
 							time.Sleep(30 * time.Second)
 						}
-
-						bar.Close()
 					}
 				}()
 			}
