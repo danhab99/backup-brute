@@ -308,35 +308,43 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+
+		var uploadWg sync.WaitGroup
+		defer uploadWg.Wait()
+
 		for task := range encryptedBufferChan {
 			if config.DryRun {
 				log.Println("DRYRUN uploading buffer", task.buffer.Len())
 			} else {
-				for {
-					bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
+				uploadWg.Add(1)
+				go func() {
+					defer uploadWg.Done()
+					for {
+						bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
 
-					_, err := minioClient.PutObject(
-						context.Background(),
-						config.S3.Bucket,
-						fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
-						task.buffer,
-						int64(task.buffer.Len()),
-						minio.PutObjectOptions{
-							ConcurrentStreamParts: true,
-							NumThreads:            uint(runtime.NumCPU()),
-							Progress:              bar,
-						},
-					)
+						_, err := minioClient.PutObject(
+							context.Background(),
+							config.S3.Bucket,
+							fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
+							task.buffer,
+							int64(task.buffer.Len()),
+							minio.PutObjectOptions{
+								ConcurrentStreamParts: true,
+								NumThreads:            uint(runtime.NumCPU()),
+								Progress:              bar,
+							},
+						)
 
-					if err == nil {
-						break
-					} else {
-						log.Println("MINIO ERROR", err)
-						time.Sleep(30 * time.Second)
+						if err == nil {
+							break
+						} else {
+							log.Println("MINIO ERROR", err)
+							time.Sleep(30 * time.Second)
+						}
+
+						bar.Close()
 					}
-
-					bar.Close()
-				}
+				}()
 			}
 			runtime.GC()
 		}
