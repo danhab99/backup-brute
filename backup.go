@@ -22,7 +22,7 @@ import (
 	"golang.org/x/crypto/openpgp"
 )
 
-func Backup(config Config) {
+func Backup(config BackupConfig) {
 	now := time.Now()
 
 	tarReader, tarPipeWriter := io.Pipe()
@@ -95,7 +95,7 @@ func Backup(config Config) {
 	go func() {
 		defer wg.Done()
 
-		for _, includeDir := range config.IncludeDirs {
+		for _, includeDir := range config.Config.IncludeDirs {
 			check0(filepath.Walk(includeDir, func(fileName string, stat fs.FileInfo, err error) error {
 				if err != nil {
 					return nil
@@ -161,10 +161,10 @@ func Backup(config Config) {
 			n := int64(math.MaxInt64)
 			i := 0
 			var err error
-			for n >= config.ChunkSize {
-				unencryptedBuffer := bytes.NewBuffer(make([]byte, 0, config.ChunkSize))
+			for n >= config.Config.ChunkSize {
+				unencryptedBuffer := bytes.NewBuffer(make([]byte, 0, config.Config.ChunkSize))
 				log.Println("Collecting chunk", i)
-				n, err = io.CopyN(unencryptedBuffer, tarReader, config.ChunkSize)
+				n, err = io.CopyN(unencryptedBuffer, tarReader, config.Config.ChunkSize)
 
 				if n > 0 {
 					unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
@@ -188,7 +188,7 @@ func Backup(config Config) {
 		defer uploadWg.Wait()
 
 		for task := range encryptedBufferChan {
-			if config.DryRun {
+			if config.Config.DryRun {
 				log.Println("DRYRUN uploading buffer", task.buffer.Len())
 			} else {
 				uploadWg.Add(1)
@@ -199,8 +199,8 @@ func Backup(config Config) {
 
 						_, err := config.MinioClient.PutObject(
 							context.Background(),
-							config.S3.Bucket,
-							fmt.Sprintf("archive %s/%d.tar.gz.gpg", now.Local().String(), task.i),
+							config.Config.S3.Bucket,
+							fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
 							task.buffer,
 							int64(task.buffer.Len()),
 							minio.PutObjectOptions{

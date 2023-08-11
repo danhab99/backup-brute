@@ -10,13 +10,13 @@ import (
 	"github.com/dustin/go-humanize"
 )
 
-func Size(config Config) {
+func Size(config BackupConfig) {
 
 	size := int64(0)
 	var wg sync.WaitGroup
-	wg.Add(len(config.IncludeDirs))
+	wg.Add(len(config.Config.IncludeDirs))
 
-	for _, dir := range config.IncludeDirs {
+	for _, dir := range config.Config.IncludeDirs {
 		go func(dir string) {
 			defer wg.Done()
 			check0(filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
