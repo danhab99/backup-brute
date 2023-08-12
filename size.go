@@ -20,6 +20,10 @@ func Size(config BackupConfig) {
 		go func(dir string) {
 			defer wg.Done()
 			check0(filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
+				if err != nil {
+					return nil
+				}
+
 				if info.IsDir() {
 					return nil
 				}
