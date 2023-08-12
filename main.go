@@ -18,6 +18,7 @@ func main() {
 	doBackup := flag.Bool("backup", false, "Do a full backup")
 	doRestore := flag.Bool("restore", false, "Do full restore")
 	doSize := flag.Bool("size", false, "Get size of backup on disk")
+	configFileName := flag.String("config", "", "config file locaiton path")
 
 	flag.Parse()
 
@@ -30,6 +31,7 @@ func main() {
 
 	var name string
 	for _, name = range []string{
+		*configFileName,
 		path.Join(check(os.Getwd()), "backup.yaml"),
 		"/etc/backup.yaml",
 		path.Join(check(os.UserHomeDir()), "backup.yaml"),
