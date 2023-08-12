@@ -4,9 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -116,7 +114,7 @@ func Restore(config *BackupConfig) {
 		buffMap := make(map[int]*bytes.Buffer)
 		var buffLock sync.Mutex
 
-		count := 0
+		count := 1
 
 		identity := check(age.ParseX25519Identity(config.Config.Age.Private))
 
@@ -132,7 +130,7 @@ func Restore(config *BackupConfig) {
 					check(io.Copy(buffMap[encryptedBuff.i], unencryptedMessage))
 
 					for buf, ok := buffMap[count]; ok; {
-						io.Copy(tarWriter, buf)
+						check(io.Copy(tarWriter, buf))
 						delete(buffMap, count)
 						count++
 					}
@@ -148,15 +146,42 @@ func Restore(config *BackupConfig) {
 		defer wg.Done()
 
 		for {
-			header := check(tarReader.Next())
-			log.Println("Writing file", header)
-			f := check(os.OpenFile(header.Name, int(header.Mode), fs.FileMode(header.Mode)))
-			n := check(io.Copy(f, tarReader))
-			if n != header.Size {
-				panic(fmt.Sprintf("Failed to save file properly %s", header.Name))
+
+			header, err := tarReader.Next()
+			if err == io.EOF {
+				break // End of archive
+			}
+			if err != nil {
+				log.Fatal("Error reading archive:", err)
+			}
+
+			// Construct the path to restore the file
+			targetPath := header.Name
+
+			// Ensure the directory structure exists for the target path
+			parentDir := filepath.Dir(targetPath)
+			if err := os.MkdirAll(parentDir, os.ModePerm); err != nil {
+				log.Fatal("Error creating parent directory:", err)
+			}
+
+			// Handle regular file
+			file, err := os.Create(targetPath)
+			if err != nil {
+				log.Fatal("Error creating file:", err)
+			}
+			defer file.Close()
+
+			// Copy the content from the archive to the file
+			_, err = io.Copy(file, tarReader)
+			if err != nil {
+				log.Fatal("Error copying file content:", err)
+			}
+
+			// Set permissions
+			if err := os.Chmod(targetPath, os.FileMode(header.Mode)); err != nil {
+				log.Fatal("Error setting file permissions:", err)
 			}
 		}
-
 	}()
 
 	wg.Wait()

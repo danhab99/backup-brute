@@ -154,6 +154,7 @@ func Backup(config *BackupConfig) {
 
 				encryptWriter := check(age.Encrypt(encryptedBuffer, recipient.Recipient()))
 				check(io.Copy(encryptWriter, task.buffer))
+				check0(encryptWriter.Close())
 
 				encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
 			}
