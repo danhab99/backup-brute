@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
+	"filippo.io/age"
 	"github.com/minio/minio-go/v7"
 	progressbar "github.com/schollz/progressbar/v3"
-	"golang.org/x/crypto/openpgp"
 )
 
-func Backup(config BackupConfig) {
+func Backup(config *BackupConfig) {
 	now := time.Now()
 
 	tarReader, tarPipeWriter := io.Pipe()
@@ -144,13 +144,17 @@ func Backup(config BackupConfig) {
 		var encryptWg sync.WaitGroup
 		encryptWg.Add(2)
 
+		recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
+
 		go func() {
 			defer encryptWg.Done()
 			for task := range unencryptedBufferChan {
 				encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
-				encryptWriter := check(openpgp.Encrypt(encryptedBuffer, config.Entities, nil, nil, nil))
-				check(io.Copy(encryptWriter, task.buffer))
 				log.Printf("Encrypted chunk %d", task.i)
+
+				encryptWriter := check(age.Encrypt(encryptedBuffer, recipient.Recipient()))
+				check(io.Copy(encryptWriter, task.buffer))
+
 				encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
 			}
 			close(encryptedBufferChan)
@@ -166,10 +170,11 @@ func Backup(config BackupConfig) {
 				log.Println("Collecting chunk", i)
 				n, err = io.CopyN(unencryptedBuffer, tarReader, config.Config.ChunkSize)
 
+				i++
+
 				if n > 0 {
 					unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
 				}
-				i++
 
 				if err != nil {
 					break

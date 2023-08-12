@@ -7,10 +7,10 @@ import (
 	"os"
 	"path"
 
+	"filippo.io/age"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	ignore "github.com/sabhiram/go-gitignore"
-	"golang.org/x/crypto/openpgp"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,18 +28,16 @@ func main() {
 
 	fmt.Println(os.Getwd())
 
-	for _, filepath := range []string{
+	var name string
+	for _, name = range []string{
 		path.Join(check(os.Getwd()), "backup.yaml"),
 		"/etc/backup.yaml",
 		path.Join(check(os.UserHomeDir()), "backup.yaml"),
 		path.Join(check(os.UserConfigDir()), "backup.yaml"),
 	} {
-		raw, err := os.ReadFile(filepath)
-		if err != nil {
-			continue
-		}
-		check0(yaml.Unmarshal(raw, &config.Config))
-		if AllFieldsDefined(config.Config) {
+		raw, err := os.ReadFile(name)
+		if err == nil {
+			check0(yaml.Unmarshal(raw, &config.Config))
 			break
 		}
 	}
@@ -56,20 +54,41 @@ func main() {
 		Region: config.Config.S3.Region,
 	}))
 
-	privateKey := check(os.Open(config.Config.GPG.PrivateKeyFile))
-	defer privateKey.Close()
+	if config.Config.Age.Private == "" || config.Config.Age.Public == "" {
+		fmt.Printf("!!! We need to generate a private key and saving it to %s, please remember to backup %s to a flashdrive to make restoring easier\n", name, name)
 
-	config.Entities = check(openpgp.ReadArmoredKeyRing(privateKey))
+		privateKey, err := age.GenerateX25519Identity()
+		if err != nil {
+			fmt.Println("Error generating identity:", err)
+			return
+		}
+
+		config.Config.Age.Private = privateKey.String()
+
+		fmt.Println("Identity Private Key:", privateKey)
+
+		publicKey := privateKey.Recipient()
+		config.Config.Age.Public = publicKey.String()
+
+		func() {
+			f := check(os.Create(name))
+			defer f.Close()
+			check0(f.Truncate(0))
+			raw := check(yaml.Marshal(config.Config))
+			check(f.Write(raw))
+			log.Println("Saved keys")
+		}()
+	}
 
 	if *doSize {
 		Size(config)
 	}
 
 	if *doBackup {
-		Backup(config)
+		Backup(&config)
 	}
 
 	if *doRestore {
-		Restore(config)
+		Restore(&config)
 	}
 }

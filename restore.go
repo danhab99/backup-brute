@@ -15,12 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"filippo.io/age"
 	"github.com/minio/minio-go/v7"
-	"golang.org/x/crypto/openpgp"
-	"golang.org/x/crypto/ssh/terminal"
 )
 
 func getBasenameWithoutExtension(p string) (string, error) {
@@ -38,23 +36,7 @@ func getBasenameWithoutExtension(p string) (string, error) {
 
 const parallelDownload = 10000
 
-func Restore(config BackupConfig) {
-
-	needPassword := false
-	for _, v := range config.Entities {
-		needPassword = needPassword && v.PrivateKey.Encrypted
-	}
-
-	if needPassword {
-		fmt.Print("Enter private key decryption password: ")
-		bytePassword := check(terminal.ReadPassword(int(syscall.Stdin)))
-		fmt.Println()
-
-		for _, v := range config.Entities {
-			check0(v.PrivateKey.Decrypt(bytePassword))
-		}
-	}
-
+func Restore(config *BackupConfig) {
 	now := time.Now()
 
 	var wg sync.WaitGroup
@@ -136,16 +118,18 @@ func Restore(config BackupConfig) {
 
 		count := 0
 
+		identity := check(age.ParseX25519Identity(config.Config.Age.Private))
+
 		for i := 0; i < runtime.NumCPU(); i++ {
 			go func() {
 				defer decryptWg.Done()
 
 				for encryptedBuff := range encryptedBuffChan {
-					unencryptedMessage := check(openpgp.ReadMessage(encryptedBuff.buffer, config.Entities, nil, nil))
+					unencryptedMessage := check(age.Decrypt(encryptedBuff.buffer, identity))
 
 					buffLock.Lock()
 					buffMap[encryptedBuff.i] = new(bytes.Buffer)
-					check(io.Copy(buffMap[encryptedBuff.i], unencryptedMessage.UnverifiedBody))
+					check(io.Copy(buffMap[encryptedBuff.i], unencryptedMessage))
 
 					for buf, ok := buffMap[count]; ok; {
 						io.Copy(tarWriter, buf)

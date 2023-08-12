@@ -22,10 +22,10 @@ type Config struct {
 		Bucket   string `yaml:"bucket"`
 	} `yaml:"s3"`
 
-	GPG struct {
-		PrivateKeyFile string `yaml:"privateKeyFile"`
-		PublicKeyFile  string `yaml:"publicKeyFile"`
-	} `yaml:"gpg"`
+	Age struct {
+		Private string `yaml:"private"`
+		Public  string `yaml:"public"`
+	} `yaml:"age"`
 
 	ChunkSize       int64    `yaml:"chunkSize"`
 	IncludeDirs     []string `yaml:"includeDirs"`
