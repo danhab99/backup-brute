@@ -41,14 +41,13 @@ const parallelDownload = 10000
 func Restore(config BackupConfig) {
 
 	needPassword := false
-	var bytePassword []byte
 	for _, v := range config.Entities {
 		needPassword = needPassword && v.PrivateKey.Encrypted
 	}
 
 	if needPassword {
 		fmt.Print("Enter private key decryption password: ")
-		bytePassword = check(terminal.ReadPassword(int(syscall.Stdin)))
+		bytePassword := check(terminal.ReadPassword(int(syscall.Stdin)))
 		fmt.Println()
 
 		for _, v := range config.Entities {
