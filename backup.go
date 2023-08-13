@@ -78,7 +78,7 @@ func Backup(config *BackupConfig) {
 		for namedbuffer := range fileBufferChan {
 			log.Println("Writing to tar file", namedbuffer.info.Name())
 			header := &tar.Header{
-				Name:    namedbuffer.info.Name(),
+				Name:    namedbuffer.filepath,
 				Size:    int64(namedbuffer.buffer.Len()),
 				Mode:    int64(namedbuffer.info.Mode()),
 				ModTime: namedbuffer.info.ModTime(),
