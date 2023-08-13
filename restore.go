@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"log"
@@ -37,37 +38,34 @@ const parallelDownload = 10000
 func Restore(config *BackupConfig) {
 	now := time.Now()
 
-	var wg sync.WaitGroup
-	wg.Add(3)
+	downloadedChunk := make(chan IndexedBuffer)
 
-	encryptedBuffChan := make(chan IndexedBuffer)
+	var downloadWg sync.WaitGroup
+	downloadWg.Add(parallelDownload)
+
+	archivesChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
+		Recursive: true,
+	})
+
+	var archives []time.Time
+
+	for archive := range archivesChan {
+		archives = append(archives, check(time.Parse(time.RFC3339, archive.Key[:strings.Index(archive.Key, "/")])))
+	}
+
+	sort.SliceStable(archives, func(i, j int) bool {
+		return archives[i].Before(archives[j])
+	})
+
+	archiveName := archives[len(archives)-1].Format(time.RFC3339)
+	objectChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
+		Prefix:    archiveName,
+		Recursive: true,
+	})
+
+	log.Println("Restoring archive", archiveName)
 
 	go func() {
-		defer wg.Done()
-
-		var downloadWg sync.WaitGroup
-		downloadWg.Add(parallelDownload)
-
-		archivesChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
-			Recursive: true,
-		})
-
-		var archives []time.Time
-
-		for archive := range archivesChan {
-			archives = append(archives, check(time.Parse(time.RFC3339, archive.Key[:strings.Index(archive.Key, "/")])))
-		}
-
-		sort.SliceStable(archives, func(i, j int) bool {
-			return archives[i].Before(archives[j])
-		})
-
-		archiveName := archives[len(archives)-1].Format(time.RFC3339)
-		objectChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
-			Prefix:    archiveName,
-			Recursive: true,
-		})
-
 		for i := 0; i < parallelDownload; i++ {
 			go func() {
 				defer downloadWg.Done()
@@ -88,7 +86,7 @@ func Restore(config *BackupConfig) {
 
 							index := check(strconv.Atoi(check(getBasenameWithoutExtension(object.Key))))
 
-							encryptedBuffChan <- IndexedBuffer{fileBuff, index}
+							downloadedChunk <- IndexedBuffer{fileBuff, index}
 							break
 						} else {
 							time.Sleep(10 * time.Second)
@@ -99,91 +97,70 @@ func Restore(config *BackupConfig) {
 		}
 
 		downloadWg.Wait()
-		close(encryptedBuffChan)
+		close(downloadedChunk)
 	}()
 
-	tarPipeReader, tarWriter := io.Pipe()
-	tarReader := tar.NewReader(tarPipeReader)
+	identity := check(age.ParseX25519Identity(config.Config.Age.Private))
 
-	go func() {
-		defer wg.Done()
-
-		var decryptWg sync.WaitGroup
-		decryptWg.Add(runtime.NumCPU())
-
-		buffMap := make(map[int]*bytes.Buffer)
-		var buffLock sync.Mutex
-
-		count := 1
-
-		identity := check(age.ParseX25519Identity(config.Config.Age.Private))
-
-		for i := 0; i < runtime.NumCPU(); i++ {
-			go func() {
-				defer decryptWg.Done()
-
-				for encryptedBuff := range encryptedBuffChan {
-					unencryptedMessage := check(age.Decrypt(encryptedBuff.buffer, identity))
-
-					buffLock.Lock()
-					buffMap[encryptedBuff.i] = new(bytes.Buffer)
-					check(io.Copy(buffMap[encryptedBuff.i], unencryptedMessage))
-
-					for buf, ok := buffMap[count]; ok; {
-						check(io.Copy(tarWriter, buf))
-						delete(buffMap, count)
-						count++
-					}
-
-					buffLock.Unlock()
-				}
-			}()
-
+	unEncryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](downloadedChunk, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
+		unencryptedBuffer := new(bytes.Buffer)
+		unencryptedMessage := check(age.Decrypt(in.buffer, identity))
+		check(io.Copy(unencryptedBuffer, unencryptedMessage))
+		return IndexedBuffer{
+			buffer: unencryptedBuffer,
+			i:      in.i,
 		}
-	}()
+	})
 
-	go func() {
-		defer wg.Done()
-
-		for {
-
-			header, err := tarReader.Next()
-			if err == io.EOF {
-				break // End of archive
-			}
-			if err != nil {
-				log.Fatal("Error reading archive:", err)
-			}
-
-			// Construct the path to restore the file
-			targetPath := header.Name
-
-			// Ensure the directory structure exists for the target path
-			parentDir := filepath.Dir(targetPath)
-			if err := os.MkdirAll(parentDir, os.ModePerm); err != nil {
-				log.Fatal("Error creating parent directory:", err)
-			}
-
-			// Handle regular file
-			file, err := os.Create(targetPath)
-			if err != nil {
-				log.Fatal("Error creating file:", err)
-			}
-			defer file.Close()
-
-			// Copy the content from the archive to the file
-			_, err = io.Copy(file, tarReader)
-			if err != nil {
-				log.Fatal("Error copying file content:", err)
-			}
-
-			// Set permissions
-			if err := os.Chmod(targetPath, os.FileMode(header.Mode)); err != nil {
-				log.Fatal("Error setting file permissions:", err)
-			}
+	decompressedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](unEncryptedBufferChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
+		decompressedBuffer := new(bytes.Buffer)
+		gzipReader := check(gzip.NewReader(in.buffer))
+		check(io.Copy(decompressedBuffer, gzipReader))
+		return IndexedBuffer{
+			buffer: decompressedBuffer,
+			i:      in.i,
 		}
-	}()
+	})
 
-	wg.Wait()
+	rawTarReader := syncronizeBuffers(decompressedBufferChan)
+	tarReader := tar.NewReader(rawTarReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break // End of archive
+		}
+		if err != nil {
+			log.Fatal("Error reading archive:", err)
+		}
+
+		// Construct the path to restore the file
+		targetPath := header.Name
+
+		// Ensure the directory structure exists for the target path
+		parentDir := filepath.Dir(targetPath)
+		if err := os.MkdirAll(parentDir, os.ModePerm); err != nil {
+			log.Fatal("Error creating parent directory:", err)
+		}
+
+		// Handle regular file
+		file, err := os.Create(targetPath)
+		if err != nil {
+			log.Fatal("Error creating file:", err)
+		}
+		defer file.Close()
+
+		// Copy the content from the archive to the file
+		_, err = io.Copy(file, tarReader)
+		if err != nil {
+			log.Fatal("Error copying file content:", err)
+		}
+
+		// Set permissions
+		if err := os.Chmod(targetPath, os.FileMode(header.Mode)); err != nil {
+			log.Fatal("Error setting file permissions:", err)
+		}
+	}
+
 	log.Println("DONE", time.Since(now))
 }

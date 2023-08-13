@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 
 	"github.com/minio/minio-go/v7"
 	ignore "github.com/sabhiram/go-gitignore"
@@ -11,6 +12,12 @@ import (
 type IndexedBuffer struct {
 	buffer *bytes.Buffer
 	i      int
+}
+
+type NamedBuffer struct {
+	filepath string
+	info     os.FileInfo
+	buffer   *bytes.Buffer
 }
 
 type Config struct {

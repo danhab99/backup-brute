@@ -95,6 +95,7 @@ func Backup(config *BackupConfig) {
 		compressedBuffer := new(bytes.Buffer)
 		gzipWriter := gzip.NewWriter(compressedBuffer)
 		check(io.Copy(gzipWriter, in.buffer))
+		check0(gzipWriter.Close())
 
 		return IndexedBuffer{
 			buffer: compressedBuffer,
