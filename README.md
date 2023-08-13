@@ -2,6 +2,12 @@
 
 Go utility for creating backups of large segments of your operating system to s3 using [AGE](https://github.com/FiloSottile/age) encryption.
 
+## Install
+
+Arch/Manjaro: `yay -S backup-brute-git`
+
+Go module: `go get github.com/danhab99/backup-brute`
+
 ## Usage
 
 ```
