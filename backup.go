@@ -9,12 +9,10 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"filippo.io/age"
@@ -25,76 +23,9 @@ import (
 func Backup(config *BackupConfig) {
 	now := time.Now()
 
-	tarReader, tarPipeWriter := io.Pipe()
-	tarWriter := tar.NewWriter(tarPipeWriter)
-	var tarLock sync.Mutex
+	fileNameChan := make(chan NamedBuffer)
 
-	var wg sync.WaitGroup
-
-	fileNameChan := make(chan struct {
-		fileName string
-		stat     fs.FileInfo
-	}, runtime.NumCPU())
-
-	var fileWg sync.WaitGroup
-	fileWg.Add(runtime.NumCPU())
-
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-
-		defer fileWg.Wait()
-
-		for i := 0; i < runtime.NumCPU(); i++ {
-			go func() {
-				defer fileWg.Done()
-				for task := range fileNameChan {
-					func() {
-						fileName := task.fileName
-						stat := task.stat
-
-						content, err := os.ReadFile(fileName)
-						if err != nil {
-							log.Println("Unable to open file", err)
-							return
-						}
-
-						log.Printf("Compressing file %s...\n", fileName)
-
-						compressedFile := new(bytes.Buffer)
-						gzipWriter := gzip.NewWriter(compressedFile)
-						_, err = io.Copy(gzipWriter, bytes.NewBuffer(content))
-						if err != nil {
-							log.Println("Unable to compress file", err)
-							return
-						}
-						log.Printf("Compressed file %s, writing to tar file\n", fileName)
-
-						if compressedFile.Len() > 0 {
-							header := &tar.Header{
-								Name:    fileName,
-								Size:    int64(compressedFile.Len()),
-								Mode:    int64(stat.Mode()),
-								ModTime: stat.ModTime(),
-							}
-
-							defer tarLock.Unlock()
-							tarLock.Lock()
-
-							check0(tarWriter.WriteHeader(header))
-							check(io.Copy(tarWriter, compressedFile))
-							log.Printf("Finished writing %s to tar\n", fileName)
-						}
-					}()
-				}
-			}()
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
 		for _, includeDir := range config.Config.IncludeDirs {
 			check0(filepath.Walk(includeDir, func(fileName string, stat fs.FileInfo, err error) error {
 				if err != nil {
@@ -117,120 +48,109 @@ func Backup(config *BackupConfig) {
 					return nil
 				}
 
-				fileNameChan <- struct {
-					fileName string
-					stat     fs.FileInfo
-				}{fileName, stat}
+				fileNameChan <- NamedBuffer{fileName, stat, nil}
 
 				return nil
 			}))
 		}
 		close(fileNameChan)
-		fileWg.Wait()
-
-		log.Println("------------\nFinished walking, closing tar file")
-		check0(tarWriter.Flush())
-		check0(tarWriter.Close())
-		check0(tarPipeWriter.Close())
 	}()
 
-	encryptedBufferChan := make(chan IndexedBuffer)
-	unencryptedBufferChan := make(chan IndexedBuffer)
+	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 1000, func(in NamedBuffer) NamedBuffer {
+		log.Println("Reading file", in.filepath)
+		return NamedBuffer{
+			filepath: in.filepath,
+			info:     in.info,
+			buffer:   bytes.NewBuffer(check(os.ReadFile(in.filepath))),
+		}
+	})
 
-	wg.Add(1)
+	tarReader, tarPipeWriter := io.Pipe()
+	tarWriter := tar.NewWriter(tarPipeWriter)
+
 	go func() {
-		defer wg.Done()
-
-		var encryptWg sync.WaitGroup
-		encryptWg.Add(2)
-
-		recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
-
-		go func() {
-			defer encryptWg.Done()
-			for task := range unencryptedBufferChan {
-				encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
-				log.Printf("Encrypted chunk %d", task.i)
-
-				encryptWriter := check(age.Encrypt(encryptedBuffer, recipient.Recipient()))
-				check(io.Copy(encryptWriter, task.buffer))
-				check0(encryptWriter.Close())
-
-				encryptedBufferChan <- IndexedBuffer{encryptedBuffer, task.i}
-			}
-			close(encryptedBufferChan)
+		defer func() {
+			check0(tarWriter.Flush())
+			check0(tarWriter.Close())
+			check0(tarPipeWriter.Close())
 		}()
 
-		go func() {
-			defer encryptWg.Done()
-			n := int64(math.MaxInt64)
-			i := 0
-			var err error
-			for n >= config.Config.ChunkSize {
-				unencryptedBuffer := bytes.NewBuffer(make([]byte, 0, config.Config.ChunkSize))
-				log.Println("Collecting chunk", i)
-				n, err = io.CopyN(unencryptedBuffer, tarReader, config.Config.ChunkSize)
-
-				i++
-
-				if n > 0 {
-					unencryptedBufferChan <- IndexedBuffer{unencryptedBuffer, i}
-				}
-
-				if err != nil {
-					break
-				}
+		for namedbuffer := range fileBufferChan {
+			log.Println("Writing to tar file", namedbuffer.info.Name())
+			header := &tar.Header{
+				Name:    namedbuffer.info.Name(),
+				Size:    int64(namedbuffer.buffer.Len()),
+				Mode:    int64(namedbuffer.info.Mode()),
+				ModTime: namedbuffer.info.ModTime(),
 			}
-			close(unencryptedBufferChan)
-		}()
-
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		var uploadWg sync.WaitGroup
-		defer uploadWg.Wait()
-
-		for task := range encryptedBufferChan {
-			if config.Config.DryRun {
-				log.Println("DRYRUN uploading buffer", task.buffer.Len())
-			} else {
-				uploadWg.Add(1)
-				go func() {
-					defer uploadWg.Done()
-					for {
-						bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
-
-						_, err := config.MinioClient.PutObject(
-							context.Background(),
-							config.Config.S3.Bucket,
-							fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
-							task.buffer,
-							int64(task.buffer.Len()),
-							minio.PutObjectOptions{
-								ConcurrentStreamParts: true,
-								NumThreads:            uint(runtime.NumCPU()),
-								Progress:              bar,
-							},
-						)
-
-						bar.Close()
-
-						if err == nil {
-							break
-						} else {
-							log.Println("MINIO ERROR", err)
-							time.Sleep(30 * time.Second)
-						}
-					}
-				}()
-			}
-			runtime.GC()
+			check0(tarWriter.WriteHeader(header))
+			check(io.Copy(tarWriter, namedbuffer.buffer))
 		}
 	}()
 
-	wg.Wait()
+	tarChunkChan := makeChunks(tarReader, config.Config.ChunkSize)
+
+	compressedBuffersChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
+		log.Println("Compressing chunk", in.i)
+		compressedBuffer := new(bytes.Buffer)
+		gzipWriter := gzip.NewWriter(compressedBuffer)
+		check(io.Copy(gzipWriter, in.buffer))
+
+		return IndexedBuffer{
+			buffer: compressedBuffer,
+			i:      in.i,
+		}
+	})
+
+	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](compressedBuffersChan, runtime.NumCPU(), func(task IndexedBuffer) IndexedBuffer {
+		encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
+		log.Printf("Encrypted chunk %d", task.i)
+
+		recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
+		encryptWriter := check(age.Encrypt(encryptedBuffer, recipient.Recipient()))
+		check(io.Copy(encryptWriter, task.buffer))
+		check0(encryptWriter.Close())
+
+		return IndexedBuffer{
+			buffer: encryptedBuffer,
+			i:      task.i,
+		}
+	})
+
+	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, 100, func(task IndexedBuffer) any {
+		for {
+			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
+
+			_, err := config.MinioClient.PutObject(
+				context.Background(),
+				config.Config.S3.Bucket,
+				fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
+				task.buffer,
+				int64(task.buffer.Len()),
+				minio.PutObjectOptions{
+					ConcurrentStreamParts: true,
+					NumThreads:            uint(runtime.NumCPU()),
+					Progress:              bar,
+				},
+			)
+
+			bar.Close()
+
+			if err == nil {
+				break
+			} else {
+				log.Println("MINIO ERROR", err)
+				time.Sleep(30 * time.Second)
+			}
+		}
+
+		return nil
+	})
+
+	for e := range waitChan {
+		if e == nil {
+		}
+	}
+
 	log.Println("DONE", time.Since(now))
 }
