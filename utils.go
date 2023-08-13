@@ -20,6 +20,10 @@ func check0(err error) {
 	}
 }
 
+func dismiss[T any](v T, err error) T {
+	return v
+}
+
 func AllFieldsDefined(v interface{}) bool {
 	value := reflect.ValueOf(v)
 	if value.Kind() != reflect.Struct {

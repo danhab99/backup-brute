@@ -34,8 +34,8 @@ func main() {
 		*configFileName,
 		path.Join(check(os.Getwd()), "backup.yaml"),
 		"/etc/backup.yaml",
-		path.Join(check(os.UserHomeDir()), "backup.yaml"),
-		path.Join(check(os.UserConfigDir()), "backup.yaml"),
+		path.Join(dismiss(os.UserHomeDir()), "backup.yaml"),
+		path.Join(dismiss(os.UserConfigDir()), "backup.yaml"),
 	} {
 		raw, err := os.ReadFile(name)
 		if err == nil {
