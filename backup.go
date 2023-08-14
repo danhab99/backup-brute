@@ -118,7 +118,7 @@ func Backup(config *BackupConfig) {
 		}
 	})
 
-	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, 100, func(task IndexedBuffer) any {
+	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, config.Config.S3.Parallel, func(task IndexedBuffer) any {
 		for {
 			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
 

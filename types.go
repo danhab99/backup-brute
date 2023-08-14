@@ -27,6 +27,7 @@ type Config struct {
 		Region   string `yaml:"region"`
 		Endpoint string `yaml:"endpoint"`
 		Bucket   string `yaml:"bucket"`
+		Parallel int    `yaml:"parallel"`
 	} `yaml:"s3"`
 
 	Age struct {
