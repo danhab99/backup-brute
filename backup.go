@@ -56,7 +56,7 @@ func Backup(config *BackupConfig) {
 		close(fileNameChan)
 	}()
 
-	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 10, func(in NamedBuffer) NamedBuffer {
+	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 2, func(in NamedBuffer) NamedBuffer {
 		log.Println("Reading file", in.filepath)
 		return NamedBuffer{
 			filepath: in.filepath,
