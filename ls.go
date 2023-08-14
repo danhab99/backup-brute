@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -15,32 +13,13 @@ import (
 type ArchiveMap map[time.Time]uint64
 
 func List(config *BackupConfig, showNums bool) (out []time.Time) {
-	const CACHE_FILE = "/var/cache/backup-brute/archivesizes.json"
-
 	archives := getListOfArchives(config)
-
-	cachedArchives := make(ArchiveMap)
-	var cachedArchivesLock sync.Mutex
-	archiveCache, err := os.ReadFile(CACHE_FILE)
-	if err == nil {
-		json.Unmarshal(archiveCache, &cachedArchives)
-	}
-
-	cachedKeys := make([]time.Time, 0, len(cachedArchives))
-	for k := range cachedArchives {
-		cachedKeys = append(cachedKeys, k)
-	}
-
-	archivesToDownload, _, archivesToDelete := vennDiff[time.Time](archives, cachedKeys)
-
-	for _, archive := range archivesToDelete {
-		delete(cachedArchives, archive)
-	}
-
+	archiveMap := make(ArchiveMap)
+	var archiveMapLock sync.Mutex
 	var wg sync.WaitGroup
 	wg.Add(len(archives))
 
-	for _, archive := range archivesToDownload {
+	for _, archive := range archives {
 		archiveName := archive.Format(time.RFC3339)
 		go func(archive time.Time) {
 			defer wg.Done()
@@ -59,28 +38,24 @@ func List(config *BackupConfig, showNums bool) (out []time.Time) {
 				}
 			}
 
-			cachedArchivesLock.Lock()
-			cachedArchives[archive] = size
-			cachedArchivesLock.Unlock()
+			archiveMapLock.Lock()
+			archiveMap[archive] = size
+			archiveMapLock.Unlock()
 		}(archive)
 	}
 
 	wg.Wait()
 
-	cacheFile := check(os.Create(CACHE_FILE))
-	defer cacheFile.Close()
-	check(cacheFile.Write(check(json.Marshal(cachedArchives))))
-
 	// maxLen := math.MaxInt
 	maxLen := 0
-	for t, _ := range cachedArchives {
+	for t, _ := range archiveMap {
 		k := t.String()
 		if len(k) > maxLen {
 			maxLen = len(k)
 		}
 	}
 
-	for k, v := range cachedArchives {
+	for k, v := range archiveMap {
 		if showNums {
 			fmt.Printf("  %d) ", len(out))
 		}
