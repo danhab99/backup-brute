@@ -10,7 +10,7 @@ import (
 	"github.com/dustin/go-humanize"
 )
 
-func Size(config BackupConfig) {
+func Size(config *BackupConfig) {
 
 	size := int64(0)
 	var wg sync.WaitGroup
