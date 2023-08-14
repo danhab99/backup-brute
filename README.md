@@ -20,6 +20,8 @@ Usage of backup-brute:
     	List archives
   -restore
     	Do full restore
+  -rm
+    	Remove an archive interactively
   -size
     	Get size of backup on disk
 ```
@@ -43,6 +45,7 @@ s3:
     region: us-east-1
     endpoint: sjc1.vultrobjects.com
     bucket: laptop
+    parallel: 20
 age:
     private: [GENERATED WHEN YOU DO YOUR FIRST BACKUP]
     public: [GENERATED WHEN YOU DO YOUR FIRST BACKUP]
