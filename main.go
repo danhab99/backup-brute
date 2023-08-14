@@ -19,6 +19,7 @@ func main() {
 	doRestore := flag.Bool("restore", false, "Do full restore")
 	doSize := flag.Bool("size", false, "Get size of backup on disk")
 	doList := flag.Bool("ls", false, "List archives")
+	doRemove := flag.Bool("rm", false, "Remove an archive interactively")
 	configFileName := flag.String("config", "", "config file locaiton path")
 
 	flag.Parse()
@@ -27,8 +28,6 @@ func main() {
 	log.Println("Starting")
 
 	var config BackupConfig
-
-	fmt.Println(os.Getwd())
 
 	var name string
 	for _, name = range []string{
@@ -84,11 +83,15 @@ func main() {
 	}
 
 	if *doList {
-		List(&config)
+		List(&config, false)
 	}
 
 	if *doSize {
 		Size(&config)
+	}
+
+	if *doRemove {
+		RemoveArchive(&config)
 	}
 
 	if *doBackup {
