@@ -15,11 +15,13 @@ import (
 type ArchiveMap map[time.Time]uint64
 
 func List(config *BackupConfig, showNums bool) (out []time.Time) {
+	const CACHE_FILE = "/var/cache/backup-brute/archivesizes.json"
+
 	archives := getListOfArchives(config)
 
 	cachedArchives := make(ArchiveMap)
 	var cachedArchivesLock sync.Mutex
-	archiveCache, err := os.ReadFile("/var/cache/backup-brute/archivesizes.json")
+	archiveCache, err := os.ReadFile(CACHE_FILE)
 	if err == nil {
 		json.Unmarshal(archiveCache, &cachedArchives)
 	}
@@ -64,6 +66,10 @@ func List(config *BackupConfig, showNums bool) (out []time.Time) {
 	}
 
 	wg.Wait()
+
+	cacheFile := check(os.Create(CACHE_FILE))
+	defer cacheFile.Close()
+	check(cacheFile.Write(check(json.Marshal(cachedArchives))))
 
 	// maxLen := math.MaxInt
 	maxLen := 0
