@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,35 +12,9 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-func getListOfArchives(config *BackupConfig) []time.Time {
-	archivesChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
-		// Recursive: true,
-	})
-
-	var archives []time.Time
-
-	for archive := range archivesChan {
-		archives = append(archives, check(time.Parse(time.RFC3339, archive.Key[:strings.Index(archive.Key, "/")])))
-	}
-
-	sort.SliceStable(archives, func(i, j int) bool {
-		return archives[i].Before(archives[j])
-	})
-
-	return archives
-}
-
-func getObjectsFromArchives(config *BackupConfig, archive time.Time) <-chan minio.ObjectInfo {
-	archiveName := archive.Format(time.RFC3339)
-	return config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
-		Prefix:    archiveName,
-		Recursive: true,
-	})
-}
-
 type ArchiveMap map[time.Time]uint64
 
-func List(config *BackupConfig) {
+func List(config *BackupConfig, showNums bool) (out []time.Time) {
 	archives := getListOfArchives(config)
 
 	cachedArchives := make(ArchiveMap)
@@ -103,6 +75,12 @@ func List(config *BackupConfig) {
 	}
 
 	for k, v := range cachedArchives {
+		if showNums {
+			fmt.Printf("  %d) ", len(out))
+		}
+		out = append(out, k)
 		fmt.Printf("%-*s %s\n", maxLen, k, humanize.Bytes(uint64(v)))
 	}
+
+	return
 }

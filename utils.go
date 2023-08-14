@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"io"
 	"reflect"
+	"sort"
+	"strings"
+	"time"
 
+	"github.com/minio/minio-go/v7"
 	progressbar "github.com/schollz/progressbar/v3"
 )
 
@@ -82,4 +87,30 @@ func vennDiff[T comparable](left, right []T) (keysInLeft, keysInBoth, keysInRigh
 	}
 
 	return
+}
+
+func getListOfArchives(config *BackupConfig) []time.Time {
+	archivesChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
+		// Recursive: true,
+	})
+
+	var archives []time.Time
+
+	for archive := range archivesChan {
+		archives = append(archives, check(time.Parse(time.RFC3339, archive.Key[:strings.Index(archive.Key, "/")])))
+	}
+
+	sort.SliceStable(archives, func(i, j int) bool {
+		return archives[i].Before(archives[j])
+	})
+
+	return archives
+}
+
+func getObjectsFromArchives(config *BackupConfig, archive time.Time) <-chan minio.ObjectInfo {
+	archiveName := archive.Format(time.RFC3339)
+	return config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
+		Prefix:    archiveName,
+		Recursive: true,
+	})
 }
