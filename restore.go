@@ -84,22 +84,16 @@ func Restore(config *BackupConfig) {
 
 	identity := check(age.ParseX25519Identity(config.Config.Age.Private))
 
-	unEncryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](downloadedChunk, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
-		unencryptedBuffer := new(bytes.Buffer)
+	decompressedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](downloadedChunk, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
 		unencryptedMessage := check(age.Decrypt(in.buffer, identity))
-		check(io.Copy(unencryptedBuffer, unencryptedMessage))
+		gzipReader := check(gzip.NewReader(unencryptedMessage))
+
+		unencryptedBuffer := new(bytes.Buffer)
+		check(io.Copy(unencryptedBuffer, gzipReader))
+		log.Println("Decompressed and decrypted buffer", in.i)
+
 		return IndexedBuffer{
 			buffer: unencryptedBuffer,
-			i:      in.i,
-		}
-	})
-
-	decompressedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](unEncryptedBufferChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
-		decompressedBuffer := new(bytes.Buffer)
-		gzipReader := check(gzip.NewReader(in.buffer))
-		check(io.Copy(decompressedBuffer, gzipReader))
-		return IndexedBuffer{
-			buffer: decompressedBuffer,
 			i:      in.i,
 		}
 	})
