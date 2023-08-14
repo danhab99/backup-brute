@@ -16,13 +16,20 @@ import (
 func RemoveArchive(config *BackupConfig) {
 	archives := List(config, true)
 
-	fmt.Printf("\n\nChoose which archive you'd like to delete (comma seperated numbers): ")
+	fmt.Printf("\n\nChoose which archive you'd like to delete (comma seperated numbers, or \"all\"): ")
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	archivesToDeleteRaw := scanner.Text()
 
-	reader := csv.NewReader(bytes.NewBuffer([]byte(archivesToDeleteRaw)))
-	archivesToDeleteRawIndexes := check(reader.Read())
+	var archivesToDeleteRawIndexes []string
+	if archivesToDeleteRaw == "all" {
+		for i, _ := range archives {
+			archivesToDeleteRawIndexes = append(archivesToDeleteRawIndexes, fmt.Sprintf("%d", i))
+		}
+	} else {
+		reader := csv.NewReader(bytes.NewBuffer([]byte(archivesToDeleteRaw)))
+		archivesToDeleteRawIndexes = check(reader.Read())
+	}
 
 	archivesToDelete := make([]int, len(archivesToDeleteRawIndexes))
 	for _, v := range archivesToDeleteRawIndexes {
