@@ -10,9 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -43,25 +41,9 @@ func Restore(config *BackupConfig) {
 	var downloadWg sync.WaitGroup
 	downloadWg.Add(parallelDownload)
 
-	archivesChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
-		Recursive: true,
-	})
-
-	var archives []time.Time
-
-	for archive := range archivesChan {
-		archives = append(archives, check(time.Parse(time.RFC3339, archive.Key[:strings.Index(archive.Key, "/")])))
-	}
-
-	sort.SliceStable(archives, func(i, j int) bool {
-		return archives[i].Before(archives[j])
-	})
-
-	archiveName := archives[len(archives)-1].Format(time.RFC3339)
-	objectChan := config.MinioClient.ListObjects(context.Background(), config.Config.S3.Bucket, minio.ListObjectsOptions{
-		Prefix:    archiveName,
-		Recursive: true,
-	})
+	archives := getListOfArchives(config)
+	archiveName := archives[len(archives)-1]
+	objectChan := getObjectsFromArchives(config, archiveName)
 
 	log.Println("Restoring archive", archiveName)
 
