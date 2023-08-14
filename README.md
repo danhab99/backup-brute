@@ -11,11 +11,13 @@ Go module: `go install github.com/danhab99/backup-brute@1.0`
 ## Usage
 
 ```
-Usage of backup:
+Usage of backup-brute:
   -backup
     	Do a full backup
   -config string
     	config file locaiton path
+  -ls
+    	List archives
   -restore
     	Do full restore
   -size
