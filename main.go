@@ -18,6 +18,7 @@ func main() {
 	doBackup := flag.Bool("backup", false, "Do a full backup")
 	doRestore := flag.Bool("restore", false, "Do full restore")
 	doSize := flag.Bool("size", false, "Get size of backup on disk")
+	doList := flag.Bool("ls", false, "List archives")
 	configFileName := flag.String("config", "", "config file locaiton path")
 
 	flag.Parse()
@@ -82,8 +83,12 @@ func main() {
 		}()
 	}
 
+	if *doList {
+		List(&config)
+	}
+
 	if *doSize {
-		Size(config)
+		Size(&config)
 	}
 
 	if *doBackup {
@@ -93,4 +98,5 @@ func main() {
 	if *doRestore {
 		Restore(&config)
 	}
+
 }
