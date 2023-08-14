@@ -89,32 +89,24 @@ func Backup(config *BackupConfig) {
 	}()
 
 	tarChunkChan := makeChunks(tarReader, config.Config.ChunkSize)
+	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
 
-	compressedBuffersChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
+	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
 		log.Println("Compressing chunk", in.i)
 		compressedBuffer := new(bytes.Buffer)
+
 		gzipWriter := gzip.NewWriter(compressedBuffer)
-		check(io.Copy(gzipWriter, in.buffer))
+		encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
+
+		check(io.Copy(encryptWriter, in.buffer))
+
+		check0(encryptWriter.Close())
+		check0(gzipWriter.Flush())
 		check0(gzipWriter.Close())
 
 		return IndexedBuffer{
 			buffer: compressedBuffer,
 			i:      in.i,
-		}
-	})
-
-	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](compressedBuffersChan, runtime.NumCPU(), func(task IndexedBuffer) IndexedBuffer {
-		encryptedBuffer := bytes.NewBuffer(make([]byte, 0, task.buffer.Len()))
-		log.Printf("Encrypted chunk %d", task.i)
-
-		recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
-		encryptWriter := check(age.Encrypt(encryptedBuffer, recipient.Recipient()))
-		check(io.Copy(encryptWriter, task.buffer))
-		check0(encryptWriter.Close())
-
-		return IndexedBuffer{
-			buffer: encryptedBuffer,
-			i:      task.i,
 		}
 	})
 
