@@ -55,3 +55,31 @@ func copyProgressN(writer io.Writer, reader io.Reader, n int64, label string) (i
 	defer bar.Close()
 	return io.CopyN(io.MultiWriter(writer, bar), reader, n)
 }
+func contains[T comparable](s []T, e T) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func vennDiff[T comparable](left, right []T) (keysInLeft, keysInBoth, keysInRight []T) {
+	for _, leftK := range left {
+		inBoth := contains[T](right, leftK)
+		if inBoth {
+			keysInBoth = append(keysInBoth, leftK)
+		} else {
+			keysInLeft = append(keysInLeft, leftK)
+		}
+	}
+
+	for _, rightK := range right {
+		inLeft := contains[T](left, rightK)
+		if !inLeft {
+			keysInRight = append(keysInRight, rightK)
+		}
+	}
+
+	return
+}
