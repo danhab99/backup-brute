@@ -23,7 +23,7 @@ func RemoveArchive(config *BackupConfig) {
 
 	var archivesToDeleteRawIndexes []string
 	if archivesToDeleteRaw == "all" {
-		for i, _ := range archives {
+		for i := range archives {
 			archivesToDeleteRawIndexes = append(archivesToDeleteRawIndexes, fmt.Sprintf("%d", i))
 		}
 	} else {
