@@ -17,10 +17,12 @@ import (
 
 	"filippo.io/age"
 	"github.com/minio/minio-go/v7"
+	"github.com/pbnjay/memory"
 	progressbar "github.com/schollz/progressbar/v3"
 )
 
 func Backup(config *BackupConfig) {
+	const FileChunks = 10
 	now := time.Now()
 
 	fileNameChan := make(chan NamedBuffer)
@@ -56,7 +58,7 @@ func Backup(config *BackupConfig) {
 		close(fileNameChan)
 	}()
 
-	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 2, func(in NamedBuffer) NamedBuffer {
+	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, FileChunks, func(in NamedBuffer) NamedBuffer {
 		log.Println("Reading file", in.filepath)
 		return NamedBuffer{
 			filepath: in.filepath,
@@ -110,7 +112,16 @@ func Backup(config *BackupConfig) {
 		}
 	})
 
-	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, config.Config.S3.Parallel, func(task IndexedBuffer) any {
+	avaliableChunks := int((memory.TotalMemory() - memory.FreeMemory()) / uint64(config.Config.ChunkSize))
+	uploadChunkCount := avaliableChunks - runtime.NumCPU() - FileChunks
+
+	if uploadChunkCount <= 0 {
+		uploadChunkCount = 2
+	}
+
+	log.Printf("Using %d upload workers\n", uploadChunkCount)
+
+	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, uploadChunkCount, func(task IndexedBuffer) any {
 		for {
 			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
 
