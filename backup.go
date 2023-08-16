@@ -95,7 +95,7 @@ func Backup(config *BackupConfig) {
 		log.Println("Compressing chunk", in.i)
 		compressedBuffer := new(bytes.Buffer)
 
-		gzipWriter := gzip.NewWriter(compressedBuffer)
+		gzipWriter := check(gzip.NewWriterLevel(compressedBuffer, gzip.BestCompression))
 		encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
 
 		check(io.Copy(encryptWriter, in.buffer))
