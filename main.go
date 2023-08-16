@@ -8,6 +8,7 @@ import (
 	"path"
 
 	"filippo.io/age"
+	"github.com/dustin/go-humanize"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	ignore "github.com/sabhiram/go-gitignore"
@@ -44,7 +45,10 @@ func main() {
 		}
 	}
 
-	log.Printf("Config: %+v\n ", config)
+	log.Printf("Config: %+v\n ", config.Config)
+
+	config.chunkSize = check(humanize.ParseBytes(config.Config.ChunkSize))
+	config.maxRam = check(humanize.ParseBytes(config.Config.MaxRam))
 
 	config.Ignorer = ignore.CompileIgnoreLines(config.Config.ExcludePatterns...)
 

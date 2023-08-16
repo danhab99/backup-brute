@@ -35,7 +35,8 @@ type Config struct {
 		Public  string `yaml:"public"`
 	} `yaml:"age"`
 
-	ChunkSize       int64    `yaml:"chunkSize"`
+	MaxRam          string   `yaml:"maxRam"`
+	ChunkSize       string   `yaml:"chunkSize"`
 	IncludeDirs     []string `yaml:"includeDirs"`
 	ExcludePatterns []string `yaml:"excludePatterns"`
 
@@ -46,6 +47,9 @@ type BackupConfig struct {
 	MinioClient *minio.Client
 	Ignorer     ignore.IgnoreParser
 	Entities    openpgp.EntityList
+
+	maxRam    uint64
+	chunkSize uint64
 
 	Config Config
 }
