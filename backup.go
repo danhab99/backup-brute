@@ -16,13 +16,14 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/dustin/go-humanize"
 	"github.com/minio/minio-go/v7"
 	"github.com/pbnjay/memory"
 	progressbar "github.com/schollz/progressbar/v3"
 )
 
 func Backup(config *BackupConfig) {
-	const FileChunks = 10
+	const FileChunks = 4
 	now := time.Now()
 
 	fileNameChan := make(chan NamedBuffer)
@@ -90,7 +91,7 @@ func Backup(config *BackupConfig) {
 		}
 	}()
 
-	tarChunkChan := makeChunks(tarReader, config.Config.ChunkSize)
+	tarChunkChan := makeChunks(tarReader, int64(config.chunkSize))
 	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
 
 	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
@@ -112,7 +113,14 @@ func Backup(config *BackupConfig) {
 		}
 	})
 
-	avaliableChunks := int((memory.TotalMemory() - memory.FreeMemory()) / uint64(config.Config.ChunkSize))
+	maxRam := config.maxRam
+	avaliableRam := memory.TotalMemory() - memory.FreeMemory()
+
+	if maxRam < avaliableRam {
+		maxRam = avaliableRam
+	}
+
+	avaliableChunks := int(maxRam / uint64(config.chunkSize))
 	uploadChunkCount := avaliableChunks - runtime.NumCPU() - FileChunks
 
 	if uploadChunkCount <= 0 {
@@ -120,31 +128,36 @@ func Backup(config *BackupConfig) {
 	}
 
 	log.Printf("Using %d upload workers\n", uploadChunkCount)
+	panic(uploadChunkCount)
 
 	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, uploadChunkCount, func(task IndexedBuffer) any {
-		for {
-			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
+		if config.Config.DryRun {
+			log.Println("!!! DRYRUN UPLOADING CHUNK", humanize.Bytes(uint64(task.buffer.Len())))
+		} else {
+			for {
+				bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
 
-			_, err := config.MinioClient.PutObject(
-				context.Background(),
-				config.Config.S3.Bucket,
-				fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
-				task.buffer,
-				int64(task.buffer.Len()),
-				minio.PutObjectOptions{
-					ConcurrentStreamParts: true,
-					NumThreads:            uint(runtime.NumCPU()),
-					Progress:              bar,
-				},
-			)
+				_, err := config.MinioClient.PutObject(
+					context.Background(),
+					config.Config.S3.Bucket,
+					fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
+					task.buffer,
+					int64(task.buffer.Len()),
+					minio.PutObjectOptions{
+						ConcurrentStreamParts: true,
+						NumThreads:            uint(runtime.NumCPU()),
+						Progress:              bar,
+					},
+				)
 
-			bar.Close()
+				bar.Close()
 
-			if err == nil {
-				break
-			} else {
-				log.Println("MINIO ERROR", err)
-				time.Sleep(30 * time.Second)
+				if err == nil {
+					break
+				} else {
+					log.Println("MINIO ERROR", err)
+					time.Sleep(30 * time.Second)
+				}
 			}
 		}
 
