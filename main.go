@@ -14,6 +14,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const VERSION = "1.1"
+
 func main() {
 	doBackup := flag.Bool("backup", false, "Do a full backup")
 	doRestore := flag.Bool("restore", false, "Do full restore")
@@ -22,6 +24,7 @@ func main() {
 	doRemove := flag.Bool("rm", false, "Remove an archive interactively")
 	showConfig := flag.Bool("show-config", false, "Print the config data")
 	configFileName := flag.String("config", "", "config file locaiton path")
+	showVersion := flag.Bool("version", false, "Print the version")
 
 	flag.Parse()
 
@@ -47,6 +50,11 @@ func main() {
 
 	if *showConfig {
 		log.Printf("Config: %+v\n ", config)
+	}
+
+	if *showVersion {
+		fmt.Println("Version:", VERSION)
+		os.Exit(2)
 	}
 
 	config.Ignorer = ignore.CompileIgnoreLines(config.Config.ExcludePatterns...)
