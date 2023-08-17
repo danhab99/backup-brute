@@ -20,6 +20,7 @@ func main() {
 	doSize := flag.Bool("size", false, "Get size of backup on disk")
 	doList := flag.Bool("ls", false, "List archives")
 	doRemove := flag.Bool("rm", false, "Remove an archive interactively")
+	showConfig := flag.Bool("show-config", false, "Print the config data")
 	configFileName := flag.String("config", "", "config file locaiton path")
 
 	flag.Parse()
@@ -44,7 +45,9 @@ func main() {
 		}
 	}
 
-	log.Printf("Config: %+v\n ", config)
+	if *showConfig {
+		log.Printf("Config: %+v\n ", config)
+	}
 
 	config.Ignorer = ignore.CompileIgnoreLines(config.Config.ExcludePatterns...)
 
