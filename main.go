@@ -87,22 +87,15 @@ func main() {
 
 	if *doList {
 		List(&config, false)
-	}
-
-	if *doSize {
+	} else if *doSize {
 		Size(&config)
-	}
-
-	if *doRemove {
+	} else if *doRemove {
 		RemoveArchive(&config)
-	}
-
-	if *doBackup {
+	} else if *doBackup {
 		Backup(&config)
-	}
-
-	if *doRestore {
+	} else if *doRestore {
 		Restore(&config)
+	} else {
+		log.Fatal("No operation selected, quitting")
 	}
-
 }
