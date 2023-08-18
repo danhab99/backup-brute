@@ -27,7 +27,7 @@ type Config struct {
 		Region   string `yaml:"region"`
 		Endpoint string `yaml:"endpoint"`
 		Bucket   string `yaml:"bucket"`
-		Parallel int    `yaml:"parallel"`
+		// Parallel int    `yaml:"parallel"`
 	} `yaml:"s3"`
 
 	Age struct {
@@ -35,7 +35,12 @@ type Config struct {
 		Public  string `yaml:"public"`
 	} `yaml:"age"`
 
-	ChunkSize       int64    `yaml:"chunkSize"`
+	Memory struct {
+		ChunkCount string `yaml:"chunkCount"`
+		ChunkSize  string `yaml:"chunkSize"`
+		Upload     string `yaml:"upload"`
+	} `yaml:"memory"`
+
 	IncludeDirs     []string `yaml:"includeDirs"`
 	ExcludePatterns []string `yaml:"excludePatterns"`
 
@@ -48,6 +53,10 @@ type BackupConfig struct {
 	Entities    openpgp.EntityList
 
 	Config Config
+
+	chunkSize  uint64
+	chunkCount int
+	upload     uint64
 }
 
 type ReaderWithLength interface {

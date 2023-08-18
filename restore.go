@@ -48,7 +48,7 @@ func Restore(config *BackupConfig) {
 	log.Println("Restoring archive", archiveName)
 
 	go func() {
-		for i := 0; i < config.Config.S3.Parallel; i++ {
+		for i := 0; i < 100; i++ {
 			go func() {
 				defer downloadWg.Done()
 

@@ -6,8 +6,10 @@ import (
 	"log"
 	"os"
 	"path"
+	"strconv"
 
 	"filippo.io/age"
+	"github.com/dustin/go-humanize"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	ignore "github.com/sabhiram/go-gitignore"
@@ -56,6 +58,10 @@ func main() {
 		fmt.Println("Version:", VERSION)
 		os.Exit(2)
 	}
+
+	config.chunkCount = check(strconv.Atoi(config.Config.Memory.ChunkCount))
+	config.chunkSize = check(humanize.ParseBytes(config.Config.Memory.ChunkSize))
+	config.upload = check(humanize.ParseBytes(config.Config.Memory.Upload))
 
 	config.Ignorer = ignore.CompileIgnoreLines(config.Config.ExcludePatterns...)
 

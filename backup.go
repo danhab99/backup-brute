@@ -13,11 +13,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"filippo.io/age"
 	"github.com/minio/minio-go/v7"
-	progressbar "github.com/schollz/progressbar/v3"
 )
 
 func Backup(config *BackupConfig) {
@@ -57,7 +57,6 @@ func Backup(config *BackupConfig) {
 	}()
 
 	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 2, func(in NamedBuffer) NamedBuffer {
-		log.Println("Reading file", in.filepath)
 		return NamedBuffer{
 			filepath: in.filepath,
 			info:     in.info,
@@ -76,7 +75,6 @@ func Backup(config *BackupConfig) {
 		}()
 
 		for namedbuffer := range fileBufferChan {
-			log.Println("Writing to tar file", namedbuffer.info.Name())
 			header := &tar.Header{
 				Name:    namedbuffer.filepath,
 				Size:    int64(namedbuffer.buffer.Len()),
@@ -88,62 +86,86 @@ func Backup(config *BackupConfig) {
 		}
 	}()
 
-	tarChunkChan := makeChunks(tarReader, config.Config.ChunkSize)
+	tarChunkChan := makeChunks(tarReader, int64(config.chunkSize))
 	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
 
-	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
-		log.Println("Compressing chunk", in.i)
-		compressedBuffer := new(bytes.Buffer)
+	uploadTaskChunk := make(chan func(), runtime.NumCPU())
 
-		gzipWriter := check(gzip.NewWriterLevel(compressedBuffer, gzip.BestCompression))
-		encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
+	var wg sync.WaitGroup
+	wg.Add(config.chunkCount)
+	wg.Add(runtime.NumCPU())
 
-		check(io.Copy(encryptWriter, in.buffer))
-
-		check0(encryptWriter.Close())
-		check0(gzipWriter.Flush())
-		check0(gzipWriter.Close())
-
-		return IndexedBuffer{
-			buffer: compressedBuffer,
-			i:      in.i,
-		}
-	})
-
-	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, config.Config.S3.Parallel, func(task IndexedBuffer) any {
-		for {
-			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
-
-			_, err := config.MinioClient.PutObject(
-				context.Background(),
-				config.Config.S3.Bucket,
-				fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
-				task.buffer,
-				int64(task.buffer.Len()),
-				minio.PutObjectOptions{
-					ConcurrentStreamParts: true,
-					NumThreads:            uint(runtime.NumCPU()),
-					Progress:              bar,
-				},
-			)
-
-			bar.Close()
-
-			if err == nil {
-				break
-			} else {
-				log.Println("MINIO ERROR", err)
-				time.Sleep(30 * time.Second)
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			defer wg.Done()
+			for upload := range uploadTaskChunk {
+				upload()
 			}
-		}
-
-		return nil
-	})
-
-	for e := range waitChan {
-		if e == nil {
-		}
+		}()
 	}
+
+	for i := 0; i < int(config.chunkCount); i++ {
+		go func() {
+			defer wg.Done()
+			for chunk := range tarChunkChan {
+				reader, writer := io.Pipe()
+
+				var wg sync.WaitGroup
+				wg.Add(2)
+
+				go func() {
+					defer wg.Done()
+
+					check(config.MinioClient.PutObject(
+						context.Background(),
+						config.Config.S3.Bucket,
+						fmt.Sprintf("%s/%d", now.Format(time.RFC3339), chunk.i),
+						reader,
+						-1,
+						minio.PutObjectOptions{
+							ConcurrentStreamParts: true,
+							NumThreads:            uint(runtime.NumCPU()),
+						},
+					))
+				}()
+
+				go func() {
+					defer wg.Done()
+					gzipWriter := check(gzip.NewWriterLevel(writer, gzip.BestCompression))
+					encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
+
+					hasMore := make(chan bool)
+					uploadedBytes := uint64(0)
+
+					work := func() {
+						n, err := io.CopyN(encryptWriter, chunk.buffer, int64(config.upload))
+						uploadedBytes += uint64(n)
+						log.Printf("Uploading chunk %d %f%%\n", chunk.i, float64(uploadedBytes)/float64(config.chunkSize)*100)
+						if err == nil {
+							hasMore <- n > 0
+						} else {
+							hasMore <- false
+						}
+					}
+
+					uploadTaskChunk <- work
+					for <-hasMore {
+						uploadTaskChunk <- work
+					}
+
+					close(hasMore)
+					check0(encryptWriter.Close())
+					check0(gzipWriter.Flush())
+					check0(gzipWriter.Close())
+					check0(writer.Close())
+				}()
+
+				wg.Wait()
+			}
+		}()
+	}
+
+	wg.Wait()
 
 	log.Println("DONE", time.Since(now))
 }
