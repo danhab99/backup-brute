@@ -2,30 +2,35 @@ package main
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"filippo.io/age"
 	"github.com/minio/minio-go/v7"
-	progressbar "github.com/schollz/progressbar/v3"
 )
 
 func Backup(config *BackupConfig) {
 	now := time.Now()
+	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
 
 	fileNameChan := make(chan NamedBuffer)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	wg.Add(runtime.NumCPU())
 
 	go func() {
+		defer wg.Done()
+		defer close(fileNameChan)
+
 		for _, includeDir := range config.Config.IncludeDirs {
 			check0(filepath.Walk(includeDir, func(fileName string, stat fs.FileInfo, err error) error {
 				if err != nil {
@@ -53,97 +58,115 @@ func Backup(config *BackupConfig) {
 				return nil
 			}))
 		}
-		close(fileNameChan)
 	}()
 
-	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 2, func(in NamedBuffer) NamedBuffer {
-		log.Println("Reading file", in.filepath)
-		return NamedBuffer{
-			filepath: in.filepath,
-			info:     in.info,
-			buffer:   bytes.NewBuffer(check(os.ReadFile(in.filepath))),
-		}
-	})
+	index := 0
+	var indexLock sync.Mutex
 
-	tarReader, tarPipeWriter := io.Pipe()
-	tarWriter := tar.NewWriter(tarPipeWriter)
+	uploadBufferChan := make(chan IndexedBuffer)
 
 	go func() {
-		defer func() {
-			check0(tarWriter.Flush())
-			check0(tarWriter.Close())
-			check0(tarPipeWriter.Close())
-		}()
+		defer wg.Done()
 
-		for namedbuffer := range fileBufferChan {
-			log.Println("Writing to tar file", namedbuffer.info.Name())
-			header := &tar.Header{
-				Name:    namedbuffer.filepath,
-				Size:    int64(namedbuffer.buffer.Len()),
-				Mode:    int64(namedbuffer.info.Mode()),
-				ModTime: namedbuffer.info.ModTime(),
-			}
-			check0(tarWriter.WriteHeader(header))
-			check(io.Copy(tarWriter, namedbuffer.buffer))
+		var wg sync.WaitGroup
+		wg.Add(runtime.NumCPU())
+
+		for i := 0; i < runtime.NumCPU(); i++ {
+			go func(i int) {
+				defer wg.Done()
+
+				l := log.Default()
+				l.SetPrefix(fmt.Sprintf("Worker%d: ", i))
+
+				running := true
+				for running {
+					indexLock.Lock()
+					thisIndex := index
+					index++
+					indexLock.Unlock()
+
+					buff := IndexedBuffer{
+						buffer: make([]byte, 0, config.Config.ChunkSize),
+						i:      thisIndex,
+					}
+
+					buffWriter := NewByteArrayWriter(&buff.buffer)
+					encryptWriter := check(age.Encrypt(buffWriter, recipient.Recipient()))
+					gzipWriter := check(gzip.NewWriterLevel(encryptWriter, gzip.BestCompression))
+					tarWriter := tar.NewWriter(gzipWriter)
+
+					l.Println("Working on chunk")
+
+					for len(buff.buffer) <= int(config.Config.ChunkSize) {
+						namedbuffer, ok := <-fileNameChan
+						if !ok {
+							running = false
+							break
+						}
+
+						header := &tar.Header{
+							Name:    namedbuffer.filepath,
+							Size:    int64(namedbuffer.info.Size()),
+							Mode:    int64(namedbuffer.info.Mode()),
+							ModTime: namedbuffer.info.ModTime(),
+						}
+						check0(tarWriter.WriteHeader(header))
+
+						l.Println("Reading file", namedbuffer.filepath)
+
+						tarWriter.Write(check(os.ReadFile(namedbuffer.filepath)))
+
+						check0(tarWriter.Flush())
+						check0(gzipWriter.Flush())
+					}
+
+					check0(tarWriter.Close())
+					check0(gzipWriter.Close())
+					check0(encryptWriter.Close())
+
+					l.Println("Sending buffer", buff.i)
+					uploadBufferChan <- buff
+				}
+			}(i)
 		}
+
+		wg.Wait()
+		close(uploadBufferChan)
 	}()
 
-	tarChunkChan := makeChunks(tarReader, config.Config.ChunkSize)
-	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
+	for i := 0; i < config.Config.S3.Parallel-1; i++ {
+		go func() {
+			defer wg.Done()
 
-	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
-		log.Println("Compressing chunk", in.i)
-		compressedBuffer := new(bytes.Buffer)
+			for task := range uploadBufferChan {
+				for {
+					runtime.GC()
 
-		gzipWriter := check(gzip.NewWriterLevel(compressedBuffer, gzip.BestCompression))
-		encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
+					buffer := NewByteArrayReader(task.buffer)
+					l := int64(len(task.buffer))
 
-		check(io.Copy(encryptWriter, in.buffer))
+					log.Println("Uploading chunk", task.i)
+					_, err := config.MinioClient.PutObject(
+						context.Background(),
+						config.Config.S3.Bucket,
+						fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
+						buffer,
+						l,
+						minio.PutObjectOptions{},
+					)
 
-		check0(encryptWriter.Close())
-		check0(gzipWriter.Flush())
-		check0(gzipWriter.Close())
-
-		return IndexedBuffer{
-			buffer: compressedBuffer,
-			i:      in.i,
-		}
-	})
-
-	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, config.Config.S3.Parallel, func(task IndexedBuffer) any {
-		for {
-			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
-
-			_, err := config.MinioClient.PutObject(
-				context.Background(),
-				config.Config.S3.Bucket,
-				fmt.Sprintf("%s/%d", now.Format(time.RFC3339), task.i),
-				task.buffer,
-				int64(task.buffer.Len()),
-				minio.PutObjectOptions{
-					ConcurrentStreamParts: true,
-					NumThreads:            uint(runtime.NumCPU()),
-					Progress:              bar,
-				},
-			)
-
-			bar.Close()
-
-			if err == nil {
-				break
-			} else {
-				log.Println("MINIO ERROR", err)
-				time.Sleep(30 * time.Second)
+					if err == nil {
+						log.Println("Uploaded chunk", task.i)
+						break
+					} else {
+						log.Println("MINIO ERROR", err)
+						time.Sleep(30 * time.Second)
+					}
+				}
 			}
-		}
-
-		return nil
-	})
-
-	for e := range waitChan {
-		if e == nil {
-		}
+		}()
 	}
 
+	wg.Wait()
 	log.Println("DONE", time.Since(now))
 }
