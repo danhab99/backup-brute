@@ -47,6 +47,8 @@ func Restore(config *BackupConfig) {
 
 	log.Println("Restoring archive", archiveName)
 
+	pool := NewBufferPool()
+
 	go func() {
 		for i := 0; i < config.Config.S3.Parallel; i++ {
 			go func() {
@@ -68,7 +70,11 @@ func Restore(config *BackupConfig) {
 
 							index := check(strconv.Atoi(check(getBasenameWithoutExtension(object.Key))))
 
-							downloadedChunk <- IndexedBuffer{fileBuff, index}
+							downloadedChunk <- IndexedBuffer{
+								pool:   &pool,
+								buffer: fileBuff,
+								i:      index,
+							}
 							break
 						} else {
 							time.Sleep(10 * time.Second)

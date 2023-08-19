@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"runtime/pprof"
 
 	"filippo.io/age"
 	"github.com/dustin/go-humanize"
@@ -26,8 +27,18 @@ func main() {
 	showConfig := flag.Bool("show-config", false, "Print the config data")
 	configFileName := flag.String("config", "", "config file locaiton path")
 	showVersion := flag.Bool("version", false, "Print the version")
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 
 	flag.Parse()
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
 	log.SetFlags(log.Ldate | log.Ltime)
 	log.Println("Starting")

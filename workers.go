@@ -48,14 +48,27 @@ func syncronizeBuffers(in chan IndexedBuffer) io.ReadCloser {
 	return reader
 }
 
+func NewBufferPool() sync.Pool {
+	return sync.Pool{
+		New: func() interface{} { return new(bytes.Buffer) },
+	}
+}
+
 func makeChunks(in io.ReadCloser, chunkSize int64) (out chan IndexedBuffer) {
 	out = make(chan IndexedBuffer)
+
+	var bufferPool = NewBufferPool()
+
 	go func() {
 		i := 0
 		for {
-			chunk := new(bytes.Buffer)
+			chunk := bufferPool.Get().(*bytes.Buffer)
 			n, err := io.CopyN(chunk, in, chunkSize)
-			out <- IndexedBuffer{chunk, i}
+			out <- IndexedBuffer{
+				pool:   &bufferPool,
+				buffer: chunk,
+				i:      i,
+			}
 			i++
 
 			if n > chunkSize || err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"sync"
 
 	"github.com/minio/minio-go/v7"
 	ignore "github.com/sabhiram/go-gitignore"
@@ -12,8 +13,13 @@ import (
 type BufferType = bytes.Buffer
 
 type IndexedBuffer struct {
+	pool   *sync.Pool
 	buffer *BufferType
 	i      int
+}
+
+func (b *IndexedBuffer) Close() {
+	b.pool.Put(b)
 }
 
 type NamedBuffer struct {

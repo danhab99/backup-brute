@@ -124,6 +124,8 @@ func Backup(config *BackupConfig) {
 			)
 			log.Println("Uploaded chunk", task.i)
 
+			task.Close()
+
 			if err == nil {
 				break
 			} else {
