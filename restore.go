@@ -102,7 +102,7 @@ func Restore(config *BackupConfig) {
 		}
 	})
 
-	rawTarReader := syncronizeBuffers(decompressedBufferChan)
+	rawTarReader := syncronizeBuffers(decompressedBufferChan, &pool)
 	tarReader := tar.NewReader(rawTarReader)
 
 	for {

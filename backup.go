@@ -64,6 +64,9 @@ func Backup(config *BackupConfig) {
 				return nil
 			}))
 		}
+
+		check0(tarWriter.Close())
+		check0(tarPipeWriter.Close())
 	}()
 
 	tarChunkChan := makeChunks(tarReader, &pool, int64(config.chunkSize))
