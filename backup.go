@@ -17,12 +17,10 @@ import (
 
 	"filippo.io/age"
 	"github.com/minio/minio-go/v7"
-	progressbar "github.com/schollz/progressbar/v3"
 )
 
 func Backup(config *BackupConfig) {
 	now := time.Now()
-
 	fileNameChan := make(chan NamedBuffer)
 
 	go func() {
@@ -112,8 +110,7 @@ func Backup(config *BackupConfig) {
 
 	waitChan := chanWorker[IndexedBuffer, any](encryptedBufferChan, config.Config.S3.Parallel, func(task IndexedBuffer) any {
 		for {
-			bar := progressbar.DefaultBytes(int64(task.buffer.Len()), fmt.Sprintf("Uploading %d", task.i))
-
+			log.Println("Uploading chunk", task.i)
 			_, err := config.MinioClient.PutObject(
 				context.Background(),
 				config.Config.S3.Bucket,
@@ -123,11 +120,9 @@ func Backup(config *BackupConfig) {
 				minio.PutObjectOptions{
 					ConcurrentStreamParts: true,
 					NumThreads:            uint(runtime.NumCPU()),
-					Progress:              bar,
 				},
 			)
-
-			bar.Close()
+			log.Println("Uploaded chunk", task.i)
 
 			if err == nil {
 				break
