@@ -17,6 +17,7 @@ func chanWorker[InutType any, OutputType any](inputChan chan InutType, workerCou
 		go func() {
 			defer wg.Done()
 			for in := range inputChan {
+				// runtime.GC()
 				outputChan <- processTask(in)
 			}
 		}()

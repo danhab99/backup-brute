@@ -20,9 +20,11 @@ import (
 
 func Backup(config *BackupConfig) {
 	now := time.Now()
-	fileNameChan := make(chan NamedBuffer)
 	pool := NewBufferPool()
 	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
+
+	tarReader, tarPipeWriter := io.Pipe()
+	tarWriter := tar.NewWriter(tarPipeWriter)
 
 	go func() {
 		for _, includeDir := range config.Config.IncludeDirs {
@@ -47,50 +49,20 @@ func Backup(config *BackupConfig) {
 					return nil
 				}
 
-				fileNameChan <- NamedBuffer{fileName, stat, nil}
+				log.Println("Writing file to tar", fileName)
+				header := &tar.Header{
+					Name:    fileName,
+					Size:    stat.Size(),
+					Mode:    int64(stat.Mode()),
+					ModTime: stat.ModTime(),
+				}
+				check0(tarWriter.WriteHeader(header))
+				f := check(os.Open(fileName))
+				io.Copy(tarWriter, f)
+				check0(f.Close())
 
 				return nil
 			}))
-		}
-		close(fileNameChan)
-	}()
-
-	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 2, func(in NamedBuffer) NamedBuffer {
-		log.Println("Reading file", in.filepath)
-
-		buff := pool.Get()
-		f := check(os.Open(in.filepath))
-		check(io.Copy(buff, f))
-		check0(f.Close())
-
-		return NamedBuffer{
-			filepath: in.filepath,
-			info:     in.info,
-			buffer:   buff,
-		}
-	})
-
-	tarReader, tarPipeWriter := io.Pipe()
-	tarWriter := tar.NewWriter(tarPipeWriter)
-
-	go func() {
-		defer func() {
-			check0(tarWriter.Flush())
-			check0(tarWriter.Close())
-			check0(tarPipeWriter.Close())
-		}()
-
-		for namedbuffer := range fileBufferChan {
-			log.Println("Writing to tar file", namedbuffer.info.Name())
-			header := &tar.Header{
-				Name:    namedbuffer.filepath,
-				Size:    int64(namedbuffer.buffer.Len()),
-				Mode:    int64(namedbuffer.info.Mode()),
-				ModTime: namedbuffer.info.ModTime(),
-			}
-			check0(tarWriter.WriteHeader(header))
-			check(io.Copy(tarWriter, namedbuffer.buffer))
-			pool.Put(namedbuffer.buffer)
 		}
 	}()
 
@@ -104,11 +76,11 @@ func Backup(config *BackupConfig) {
 		encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
 
 		check(io.Copy(encryptWriter, in.buffer))
+		pool.Put(in.buffer)
 
 		check0(encryptWriter.Close())
 		check0(gzipWriter.Flush())
 		check0(gzipWriter.Close())
-		pool.Put(in.buffer)
 
 		return IndexedBuffer{
 			buffer: compressedBuffer,
@@ -126,8 +98,8 @@ func Backup(config *BackupConfig) {
 				task.buffer,
 				int64(task.buffer.Len()),
 				minio.PutObjectOptions{
-					ConcurrentStreamParts: true,
-					NumThreads:            uint(runtime.NumCPU()),
+					// ConcurrentStreamParts: true,
+					// NumThreads:            uint(runtime.NumCPU()),
 				},
 			)
 			log.Println("Uploaded chunk", task.i)
