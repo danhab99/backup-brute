@@ -6,7 +6,7 @@ Go utility for creating backups of large segments of your operating system to s3
 
 Arch/Manjaro: `yay -S backup-brute-git`
 
-Go module: `go install github.com/danhab99/backup-brute@1.0`
+Go module: `go install github.com/danhab99/backup-brute@1.3`
 
 ## Usage
 
@@ -22,8 +22,12 @@ Usage of backup-brute:
     	Do full restore
   -rm
     	Remove an archive interactively
+  -show-config
+    	Print the config data
   -size
     	Get size of backup on disk
+  -version
+    	Print the version
 ```
 
 ## `backup.yaml`
@@ -50,7 +54,8 @@ age:
     private: [GENERATED WHEN YOU DO YOUR FIRST BACKUP]
     public: [GENERATED WHEN YOU DO YOUR FIRST BACKUP]
 
-chunkSize: 10000000 # Size in bytes of the chunks that get uploaded to s3
+ram:
+    chunkSize: "50MB"
 
 includeDirs:
     - /home
