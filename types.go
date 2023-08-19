@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"os"
 
 	"github.com/minio/minio-go/v7"
@@ -9,15 +8,17 @@ import (
 	"golang.org/x/crypto/openpgp"
 )
 
+type BufferType = ManagedBuffer
+
 type IndexedBuffer struct {
-	buffer *bytes.Buffer
+	buffer *BufferType
 	i      int
 }
 
 type NamedBuffer struct {
 	filepath string
 	info     os.FileInfo
-	buffer   *bytes.Buffer
+	buffer   *BufferType
 }
 
 type Config struct {
@@ -35,7 +36,11 @@ type Config struct {
 		Public  string `yaml:"public"`
 	} `yaml:"age"`
 
-	ChunkSize       int64    `yaml:"chunkSize"`
+	Ram struct {
+		Max       string `yaml:"max"`
+		ChunkSize string `yaml:"chunkSize"`
+	} `yaml:"ram"`
+
 	IncludeDirs     []string `yaml:"includeDirs"`
 	ExcludePatterns []string `yaml:"excludePatterns"`
 
@@ -46,6 +51,9 @@ type BackupConfig struct {
 	MinioClient *minio.Client
 	Ignorer     ignore.IgnoreParser
 	Entities    openpgp.EntityList
+
+	maxRam    uint64
+	chunkSize uint64
 
 	Config Config
 }

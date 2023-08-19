@@ -86,7 +86,7 @@ func Backup(config *BackupConfig) {
 		}
 	}()
 
-	tarChunkChan := makeChunks(tarReader, config.Config.ChunkSize)
+	tarChunkChan := makeChunks(tarReader, int64(config.chunkSize))
 	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
 
 	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
