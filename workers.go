@@ -31,7 +31,15 @@ func chanWorker[InutType any, OutputType any](inputChan chan InutType, workerCou
 	return outputChan
 }
 
-func syncronizeBuffers(in chan IndexedBuffer) io.ReadCloser {
+type BufferPool = syncpool.Pool[*BufferType]
+
+func NewBufferPool() BufferPool {
+	return syncpool.New[*BufferType](func() *BufferType {
+		return new(BufferType)
+	})
+}
+
+func syncronizeBuffers(in chan IndexedBuffer, pool *BufferPool) io.ReadCloser {
 	reader, writer := io.Pipe()
 	go func() {
 		buffMap := make(map[int]*bytes.Buffer)
@@ -42,6 +50,7 @@ func syncronizeBuffers(in chan IndexedBuffer) io.ReadCloser {
 
 			for buf, ok := buffMap[count]; ok; {
 				check(io.Copy(writer, buf))
+				pool.Put(buf)
 				delete(buffMap, count)
 				count++
 			}
@@ -49,14 +58,6 @@ func syncronizeBuffers(in chan IndexedBuffer) io.ReadCloser {
 		check0(writer.Close())
 	}()
 	return reader
-}
-
-type BufferPool = syncpool.Pool[*BufferType]
-
-func NewBufferPool() BufferPool {
-	return syncpool.New[*BufferType](func() *BufferType {
-		return new(BufferType)
-	})
 }
 
 func makeChunks(in io.ReadCloser, bufferPool *BufferPool, chunkSize int64) (out chan IndexedBuffer) {
