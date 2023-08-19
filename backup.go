@@ -22,6 +22,10 @@ func Backup(config *BackupConfig) {
 	now := time.Now()
 	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
 
+	sizeOfChunksBeingMade := uint64(runtime.NumCPU()) * config.chunkSize
+	sizeOfChunksBeingUploaded := config.maxRam - sizeOfChunksBeingMade
+	numberOfChunksToUpload := int(sizeOfChunksBeingUploaded / config.chunkSize)
+
 	fileNameChan := make(chan NamedBuffer)
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -86,7 +90,7 @@ func Backup(config *BackupConfig) {
 					indexLock.Unlock()
 
 					buff := IndexedBuffer{
-						buffer: make([]byte, 0, config.Config.ChunkSize),
+						buffer: make([]byte, 0, config.chunkSize),
 						i:      thisIndex,
 					}
 
@@ -97,7 +101,7 @@ func Backup(config *BackupConfig) {
 
 					l.Println("Working on chunk")
 
-					for len(buff.buffer) <= int(config.Config.ChunkSize) {
+					for len(buff.buffer) <= int(config.chunkSize) {
 						namedbuffer, ok := <-fileNameChan
 						if !ok {
 							running = false
@@ -134,7 +138,7 @@ func Backup(config *BackupConfig) {
 		close(uploadBufferChan)
 	}()
 
-	for i := 0; i < config.Config.S3.Parallel-1; i++ {
+	for i := 0; i < numberOfChunksToUpload; i++ {
 		go func() {
 			defer wg.Done()
 
