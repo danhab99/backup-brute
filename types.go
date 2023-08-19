@@ -19,7 +19,7 @@ type IndexedBuffer struct {
 }
 
 func (b *IndexedBuffer) Close() {
-	b.pool.Put(b)
+	b.pool.Put(b.buffer)
 }
 
 type NamedBuffer struct {

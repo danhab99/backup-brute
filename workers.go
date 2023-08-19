@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"log"
 	"sync"
 )
 
@@ -50,14 +51,15 @@ func syncronizeBuffers(in chan IndexedBuffer) io.ReadCloser {
 
 func NewBufferPool() sync.Pool {
 	return sync.Pool{
-		New: func() interface{} { return new(bytes.Buffer) },
+		New: func() interface{} {
+			log.Println("!!! ALLOCATING BUFFER")
+			return new(bytes.Buffer)
+		},
 	}
 }
 
-func makeChunks(in io.ReadCloser, chunkSize int64) (out chan IndexedBuffer) {
+func makeChunks(in io.ReadCloser, bufferPool *sync.Pool, chunkSize int64) (out chan IndexedBuffer) {
 	out = make(chan IndexedBuffer)
-
-	var bufferPool = NewBufferPool()
 
 	go func() {
 		i := 0
@@ -65,7 +67,7 @@ func makeChunks(in io.ReadCloser, chunkSize int64) (out chan IndexedBuffer) {
 			chunk := bufferPool.Get().(*bytes.Buffer)
 			n, err := io.CopyN(chunk, in, chunkSize)
 			out <- IndexedBuffer{
-				pool:   &bufferPool,
+				pool:   bufferPool,
 				buffer: chunk,
 				i:      i,
 			}
