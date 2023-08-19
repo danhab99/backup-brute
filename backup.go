@@ -75,7 +75,7 @@ func Backup(config *BackupConfig) {
 		var wg sync.WaitGroup
 		wg.Add(runtime.NumCPU())
 
-		for i := 0; i < runtime.NumCPU(); i++ {
+		for i := 0; i < runtime.NumCPU()-1; i++ {
 			go func(i int) {
 				defer wg.Done()
 
@@ -105,6 +105,11 @@ func Backup(config *BackupConfig) {
 						namedbuffer, ok := <-fileNameChan
 						if !ok {
 							running = false
+							break
+						}
+
+						if namedbuffer.info.Size()+int64(len(buff.buffer)) > int64(config.chunkSize) {
+							fileNameChan <- namedbuffer
 							break
 						}
 
