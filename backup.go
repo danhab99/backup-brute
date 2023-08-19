@@ -79,9 +79,6 @@ func Backup(config *BackupConfig) {
 			go func(i int) {
 				defer wg.Done()
 
-				l := log.Default()
-				l.SetPrefix(fmt.Sprintf("Worker%d: ", i))
-
 				running := true
 				for running {
 					indexLock.Lock()
@@ -99,7 +96,7 @@ func Backup(config *BackupConfig) {
 					gzipWriter := check(gzip.NewWriterLevel(encryptWriter, gzip.BestCompression))
 					tarWriter := tar.NewWriter(gzipWriter)
 
-					l.Println("Working on chunk")
+					log.Println("Working on chunk")
 
 					for len(buff.buffer) <= int(config.chunkSize) {
 						namedbuffer, ok := <-fileNameChan
@@ -108,7 +105,13 @@ func Backup(config *BackupConfig) {
 							break
 						}
 
-						if namedbuffer.info.Size()+int64(len(buff.buffer)) > int64(config.chunkSize) {
+						hasRoomInBuffer := namedbuffer.info.Size()+int64(len(buff.buffer)) > int64(config.chunkSize)
+						fileIsBiggerThanBuffer := namedbuffer.info.Size() > int64(config.chunkSize)
+						bufferIsEmpty := len(buff.buffer) <= 0
+						acceptAnyways := bufferIsEmpty && fileIsBiggerThanBuffer
+						reject := !hasRoomInBuffer && acceptAnyways
+
+						if reject {
 							log.Println("Rejecting file because buffer is full", namedbuffer.filepath)
 							fileNameChan <- namedbuffer
 							break
@@ -122,7 +125,7 @@ func Backup(config *BackupConfig) {
 						}
 						check0(tarWriter.WriteHeader(header))
 
-						l.Println("Reading file", namedbuffer.filepath)
+						log.Println("Reading file", namedbuffer.filepath)
 
 						tarWriter.Write(check(os.ReadFile(namedbuffer.filepath)))
 
@@ -134,7 +137,7 @@ func Backup(config *BackupConfig) {
 					check0(gzipWriter.Close())
 					check0(encryptWriter.Close())
 
-					l.Println("Sending buffer", buff.i)
+					log.Println("Sending buffer", buff.i)
 					uploadBufferChan <- buff
 				}
 			}(i)
