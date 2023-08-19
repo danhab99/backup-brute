@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 
 	"github.com/minio/minio-go/v7"
@@ -8,7 +9,7 @@ import (
 	"golang.org/x/crypto/openpgp"
 )
 
-type BufferType = ManagedBuffer
+type BufferType = bytes.Buffer
 
 type IndexedBuffer struct {
 	buffer *BufferType
