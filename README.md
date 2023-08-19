@@ -4,9 +4,9 @@ Go utility for creating backups of large segments of your operating system to s3
 
 ## Install
 
-Arch/Manjaro: `yay -S backup-brute-git`
+Arch/Manjaro: `yay -S backup-brute`
 
-Go module: `go install github.com/danhab99/backup-brute@1.3`
+Go module: `go install github.com/danhab99/backup-brute@1.4`
 
 ## Usage
 
