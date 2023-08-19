@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -22,6 +21,8 @@ import (
 func Backup(config *BackupConfig) {
 	now := time.Now()
 	fileNameChan := make(chan NamedBuffer)
+	pool := NewBufferPool()
+	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
 
 	go func() {
 		for _, includeDir := range config.Config.IncludeDirs {
@@ -56,10 +57,16 @@ func Backup(config *BackupConfig) {
 
 	fileBufferChan := chanWorker[NamedBuffer, NamedBuffer](fileNameChan, 2, func(in NamedBuffer) NamedBuffer {
 		log.Println("Reading file", in.filepath)
+
+		buff := pool.Get()
+		f := check(os.Open(in.filepath))
+		check(io.Copy(buff, f))
+		check0(f.Close())
+
 		return NamedBuffer{
 			filepath: in.filepath,
 			info:     in.info,
-			buffer:   bytes.NewBuffer(check(os.ReadFile(in.filepath))),
+			buffer:   buff,
 		}
 	})
 
@@ -83,15 +90,15 @@ func Backup(config *BackupConfig) {
 			}
 			check0(tarWriter.WriteHeader(header))
 			check(io.Copy(tarWriter, namedbuffer.buffer))
+			pool.Put(namedbuffer.buffer)
 		}
 	}()
 
-	tarChunkChan, pool := makeChunks(tarReader, int64(config.chunkSize))
-	recipient := check(age.ParseX25519Identity(config.Config.Age.Private))
+	tarChunkChan := makeChunks(tarReader, &pool, int64(config.chunkSize))
 
 	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
 		log.Println("Compressing chunk", in.i)
-		compressedBuffer := pool.Get().(*bytes.Buffer)
+		compressedBuffer := pool.Get()
 
 		gzipWriter := check(gzip.NewWriterLevel(compressedBuffer, gzip.BestCompression))
 		encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
@@ -101,12 +108,11 @@ func Backup(config *BackupConfig) {
 		check0(encryptWriter.Close())
 		check0(gzipWriter.Flush())
 		check0(gzipWriter.Close())
-		in.Close()
+		pool.Put(in.buffer)
 
 		return IndexedBuffer{
 			buffer: compressedBuffer,
 			i:      in.i,
-			pool:   in.pool,
 		}
 	})
 
@@ -126,7 +132,7 @@ func Backup(config *BackupConfig) {
 			)
 			log.Println("Uploaded chunk", task.i)
 
-			task.Close()
+			pool.Put(task.buffer)
 
 			if err == nil {
 				break

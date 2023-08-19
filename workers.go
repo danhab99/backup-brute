@@ -3,8 +3,9 @@ package main
 import (
 	"bytes"
 	"io"
-	"log"
 	"sync"
+
+	"mkm.pub/syncpool"
 )
 
 func chanWorker[InutType any, OutputType any](inputChan chan InutType, workerCount int, processTask func(in InutType) OutputType) chan OutputType {
@@ -49,25 +50,23 @@ func syncronizeBuffers(in chan IndexedBuffer) io.ReadCloser {
 	return reader
 }
 
-func NewBufferPool() sync.Pool {
-	return sync.Pool{
-		New: func() interface{} {
-			log.Println("!!! ALLOCATING BUFFER")
-			return new(bytes.Buffer)
-		},
-	}
+type BufferPool = syncpool.Pool[*BufferType]
+
+func NewBufferPool() BufferPool {
+	return syncpool.New[*BufferType](func() *BufferType {
+		return new(BufferType)
+	})
 }
 
-func makeChunks(in io.ReadCloser, bufferPool *sync.Pool, chunkSize int64) (out chan IndexedBuffer) {
+func makeChunks(in io.ReadCloser, bufferPool *BufferPool, chunkSize int64) (out chan IndexedBuffer) {
 	out = make(chan IndexedBuffer)
 
 	go func() {
 		i := 0
 		for {
-			chunk := bufferPool.Get().(*bytes.Buffer)
+			chunk := bufferPool.Get()
 			n, err := io.CopyN(chunk, in, chunkSize)
 			out <- IndexedBuffer{
-				pool:   bufferPool,
 				buffer: chunk,
 				i:      i,
 			}

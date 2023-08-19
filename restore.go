@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"io"
@@ -48,6 +47,7 @@ func Restore(config *BackupConfig) {
 	log.Println("Restoring archive", archiveName)
 
 	pool := NewBufferPool()
+	identity := check(age.ParseX25519Identity(config.Config.Age.Private))
 
 	go func() {
 		for i := 0; i < config.Config.S3.Parallel; i++ {
@@ -64,14 +64,13 @@ func Restore(config *BackupConfig) {
 						log.Println("Downloading archive", object.Key)
 						file, err := config.MinioClient.GetObject(context.Background(), config.Config.S3.Bucket, object.Key, minio.GetObjectOptions{})
 						if err == nil {
-							fileBuff := new(bytes.Buffer)
+							fileBuff := pool.Get()
 							check(io.Copy(fileBuff, file))
 							check0(file.Close())
 
 							index := check(strconv.Atoi(check(getBasenameWithoutExtension(object.Key))))
 
 							downloadedChunk <- IndexedBuffer{
-								pool:   &pool,
 								buffer: fileBuff,
 								i:      index,
 							}
@@ -88,15 +87,14 @@ func Restore(config *BackupConfig) {
 		close(downloadedChunk)
 	}()
 
-	identity := check(age.ParseX25519Identity(config.Config.Age.Private))
-
 	decompressedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](downloadedChunk, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
 		unencryptedMessage := check(age.Decrypt(in.buffer, identity))
 		gzipReader := check(gzip.NewReader(unencryptedMessage))
 
-		unencryptedBuffer := new(bytes.Buffer)
+		unencryptedBuffer := pool.Get()
 		check(io.Copy(unencryptedBuffer, gzipReader))
 		log.Println("Decompressed and decrypted buffer", in.i)
+		pool.Put(in.buffer)
 
 		return IndexedBuffer{
 			buffer: unencryptedBuffer,

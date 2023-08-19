@@ -31,6 +31,7 @@ require (
 	golang.org/x/term v0.7.0 // indirect
 	golang.org/x/text v0.9.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
+	mkm.pub/syncpool v0.1.0 // indirect
 )
 
 replace golang.org/x/crypto/openpgp => github.com/ProtonMail/go-crypto/opengpg v0.0.0-20230717121422-5aa5874ade95
