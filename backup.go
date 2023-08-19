@@ -109,6 +109,7 @@ func Backup(config *BackupConfig) {
 						}
 
 						if namedbuffer.info.Size()+int64(len(buff.buffer)) > int64(config.chunkSize) {
+							log.Println("Rejecting file because buffer is full", namedbuffer.filepath)
 							fileNameChan <- namedbuffer
 							break
 						}
