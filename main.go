@@ -16,7 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const VERSION = "1.4"
+const VERSION = "1.4.1"
 
 func main() {
 	doBackup := flag.Bool("backup", false, "Do a full backup")
