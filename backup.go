@@ -73,20 +73,21 @@ func Backup(config *BackupConfig) {
 
 	encryptedBufferChan := chanWorker[IndexedBuffer, IndexedBuffer](tarChunkChan, runtime.NumCPU(), func(in IndexedBuffer) IndexedBuffer {
 		log.Println("Compressing chunk", in.i)
-		compressedBuffer := pool.Get()
+		buff := pool.Get()
 
-		gzipWriter := check(gzip.NewWriterLevel(compressedBuffer, gzip.BestCompression))
-		encryptWriter := check(age.Encrypt(gzipWriter, recipient.Recipient()))
+		encryptWriter := check(age.Encrypt(buff, recipient.Recipient()))
+		gzipWriter := check(gzip.NewWriterLevel(encryptWriter, gzip.BestCompression))
 
-		check(io.Copy(encryptWriter, in.buffer))
+		check(io.Copy(gzipWriter, in.buffer))
 		pool.Put(in.buffer)
 
-		check0(encryptWriter.Close())
 		check0(gzipWriter.Flush())
 		check0(gzipWriter.Close())
+		check0(encryptWriter.Close())
+		log.Println("Finished compressing chunk", in.i)
 
 		return IndexedBuffer{
-			buffer: compressedBuffer,
+			buffer: buff,
 			i:      in.i,
 		}
 	})
