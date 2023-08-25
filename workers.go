@@ -31,6 +31,24 @@ func chanWorker[InutType any, OutputType any](inputChan chan InutType, workerCou
 	return outputChan
 }
 
+func pipeWorker(input io.ReadCloser, chunkSize int64, workerCount int, processChunk func(out io.Writer, in io.Reader)) io.ReadCloser {
+	pool := NewBufferPool()
+	chunkChan := makeChunks(input, &pool, chunkSize)
+
+	out := chanWorker[IndexedBuffer, IndexedBuffer](chunkChan, workerCount, func(in IndexedBuffer) IndexedBuffer {
+		r := pool.Get()
+		processChunk(in.buffer, r)
+		pool.Put(in.buffer)
+
+		return IndexedBuffer{
+			i:      in.i,
+			buffer: r,
+		}
+	})
+
+	return syncronizeBuffers(out, &pool)
+}
+
 type BufferPool = syncpool.Pool[*BufferType]
 
 func NewBufferPool() BufferPool {
