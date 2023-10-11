@@ -3,16 +3,17 @@ module backup
 go 1.20
 
 require (
+	filippo.io/age v1.1.1
 	github.com/dustin/go-humanize v1.0.1
 	github.com/minio/minio-go/v7 v7.0.52
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 	github.com/schollz/progressbar/v3 v3.13.1
-	golang.org/x/crypto v0.8.0
+	golang.org/x/crypto v0.14.0
 	gopkg.in/yaml.v3 v3.0.1
+	mkm.pub/syncpool v0.1.0
 )
 
 require (
-	filippo.io/age v1.1.1 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
@@ -26,12 +27,11 @@ require (
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/rs/xid v1.4.0 // indirect
 	github.com/sirupsen/logrus v1.9.0 // indirect
-	golang.org/x/net v0.9.0 // indirect
-	golang.org/x/sys v0.7.0 // indirect
-	golang.org/x/term v0.7.0 // indirect
-	golang.org/x/text v0.9.0 // indirect
+	golang.org/x/net v0.17.0 // indirect
+	golang.org/x/sys v0.13.0 // indirect
+	golang.org/x/term v0.13.0 // indirect
+	golang.org/x/text v0.13.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
-	mkm.pub/syncpool v0.1.0 // indirect
 )
 
 replace golang.org/x/crypto/openpgp => github.com/ProtonMail/go-crypto/opengpg v0.0.0-20230717121422-5aa5874ade95
