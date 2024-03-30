@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -56,6 +57,7 @@ func main() {
 		raw, err := os.ReadFile(name)
 		if err == nil {
 			check0(yaml.Unmarshal(raw, &config.Config))
+			log.Println("Found config file", name)
 			break
 		}
 	}
@@ -79,8 +81,21 @@ func main() {
 	config.MinioClient = check(minio.New(config.Config.S3.Endpoint, &minio.Options{
 		Creds:  creds,
 		Secure: true,
-		Region: config.Config.S3.Region,
+		// Region: config.Config.S3.Region,
 	}))
+
+	bucketExists, err := config.MinioClient.BucketExists(context.Background(), config.Config.S3.Bucket)
+	if err != nil {
+		panic(err)
+	}
+
+	if !bucketExists {
+		err := config.MinioClient.MakeBucket(context.Background(), config.Config.S3.Bucket, minio.MakeBucketOptions{})
+		if err != nil {
+			panic(err)
+		}
+		log.Println("Created S3 bucket", config.Config.S3.Bucket)
+	}
 
 	if config.Config.Age.Private == "" || config.Config.Age.Public == "" {
 		fmt.Printf("!!! We need to generate a private key and saving it to %s, please remember to backup %s to a flashdrive to make restoring easier\n", name, name)
