@@ -92,7 +92,7 @@ func makeChunks(in io.ReadCloser, bufferPool *BufferPool, chunkSize int64) (out 
 			}
 			i++
 
-			if n > chunkSize || err != nil {
+			if n < chunkSize || err != nil {
 				close(out)
 				break
 			}
